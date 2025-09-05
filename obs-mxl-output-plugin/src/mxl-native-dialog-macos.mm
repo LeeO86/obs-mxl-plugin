@@ -10,14 +10,10 @@
     NSButton *outputCheck;
     NSTextField *videoLabel;
     NSTextField *videoField;
-    NSTextField *audioLabel;
-    NSTextField *audioField;
     NSButton *videoCheck;
-    NSButton *audioCheck;
 }
 - (void)setupControls:(MXLNativeDialog::Settings&)settings;
 - (void)videoCheckChanged:(id)sender;
-- (void)audioCheckChanged:(id)sender;
 - (void)getSettings:(MXLNativeDialog::Settings&)settings;
 @end
 
@@ -25,7 +21,7 @@
 
 - (void)setupControls:(MXLNativeDialog::Settings&)settings {
     // Status information at the top
-    NSTextField *statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 240, 500, 20)];
+    NSTextField *statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 260, 500, 20)];
     [statusLabel setStringValue:@"Current Status:"];
     [statusLabel setBezeled:NO];
     [statusLabel setDrawsBackground:NO];
@@ -45,7 +41,7 @@
         statusText = @"⚪ MXL Output is NOT CREATED";
     }
     
-    NSTextField *statusValue = [[NSTextField alloc] initWithFrame:NSMakeRect(120, 240, 380, 20)];
+    NSTextField *statusValue = [[NSTextField alloc] initWithFrame:NSMakeRect(120, 260, 380, 20)];
     [statusValue setStringValue:statusText];
     [statusValue setBezeled:NO];
     [statusValue setDrawsBackground:NO];
@@ -55,7 +51,7 @@
     [self addSubview:statusValue];
     
     // MXL Domain Path (changed from "Domain Path")
-    NSTextField *domainLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 210, 140, 20)];
+    NSTextField *domainLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 220, 140, 20)];
     [domainLabel setStringValue:@"MXL Domain Path:"];
     [domainLabel setBezeled:NO];
     [domainLabel setDrawsBackground:NO];
@@ -63,7 +59,7 @@
     [domainLabel setSelectable:NO];
     [self addSubview:domainLabel];
     
-    domainField = [[NSTextField alloc] initWithFrame:NSMakeRect(160, 210, 340, 20)];
+    domainField = [[NSTextField alloc] initWithFrame:NSMakeRect(160, 220, 340, 20)];
     [domainField setStringValue:[NSString stringWithUTF8String:settings.domain_path.c_str()]];
     [self addSubview:domainField];
     
@@ -75,7 +71,7 @@
     [self addSubview:outputCheck];
     
     // Video Enabled
-    videoCheck = [[NSButton alloc] initWithFrame:NSMakeRect(10, 150, 200, 20)];
+    videoCheck = [[NSButton alloc] initWithFrame:NSMakeRect(10, 140, 200, 20)];
     [videoCheck setButtonType:NSButtonTypeSwitch];
     [videoCheck setTitle:@"Enable Video Stream"];
     [videoCheck setState:settings.video_enabled ? NSControlStateValueOn : NSControlStateValueOff];
@@ -83,17 +79,8 @@
     [videoCheck setAction:@selector(videoCheckChanged:)];
     [self addSubview:videoCheck];
     
-    // Audio Enabled
-    audioCheck = [[NSButton alloc] initWithFrame:NSMakeRect(10, 120, 200, 20)];
-    [audioCheck setButtonType:NSButtonTypeSwitch];
-    [audioCheck setTitle:@"Enable Audio Stream"];
-    [audioCheck setState:settings.audio_enabled ? NSControlStateValueOn : NSControlStateValueOff];
-    [audioCheck setTarget:self];
-    [audioCheck setAction:@selector(audioCheckChanged:)];
-    [self addSubview:audioCheck];
-    
     // Video Flow ID (conditionally visible, wider field)
-    videoLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 90, 140, 20)];
+    videoLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 100, 140, 20)];
     [videoLabel setStringValue:@"Video Flow ID:"];
     [videoLabel setBezeled:NO];
     [videoLabel setDrawsBackground:NO];
@@ -102,25 +89,10 @@
     [videoLabel setHidden:!settings.video_enabled];
     [self addSubview:videoLabel];
     
-    videoField = [[NSTextField alloc] initWithFrame:NSMakeRect(160, 90, 340, 20)];
+    videoField = [[NSTextField alloc] initWithFrame:NSMakeRect(160, 100, 340, 20)];
     [videoField setStringValue:[NSString stringWithUTF8String:settings.video_flow_id.c_str()]];
     [videoField setHidden:!settings.video_enabled];
     [self addSubview:videoField];
-    
-    // Audio Flow ID (conditionally visible, wider field)
-    audioLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 60, 140, 20)];
-    [audioLabel setStringValue:@"Audio Flow ID:"];
-    [audioLabel setBezeled:NO];
-    [audioLabel setDrawsBackground:NO];
-    [audioLabel setEditable:NO];
-    [audioLabel setSelectable:NO];
-    [audioLabel setHidden:!settings.audio_enabled];
-    [self addSubview:audioLabel];
-    
-    audioField = [[NSTextField alloc] initWithFrame:NSMakeRect(160, 60, 340, 20)];
-    [audioField setStringValue:[NSString stringWithUTF8String:settings.audio_flow_id.c_str()]];
-    [audioField setHidden:!settings.audio_enabled];
-    [self addSubview:audioField];
 }
 
 - (void)videoCheckChanged:(id)sender {
@@ -129,30 +101,17 @@
     [videoField setHidden:!enabled];
 }
 
-- (void)audioCheckChanged:(id)sender {
-    BOOL enabled = [audioCheck state] == NSControlStateValueOn;
-    [audioLabel setHidden:!enabled];
-    [audioField setHidden:!enabled];
-}
 
 - (void)getSettings:(MXLNativeDialog::Settings&)settings {
     settings.domain_path = [[domainField stringValue] UTF8String];
     settings.output_enabled = [outputCheck state] == NSControlStateValueOn;
     settings.video_enabled = [videoCheck state] == NSControlStateValueOn;
-    settings.audio_enabled = [audioCheck state] == NSControlStateValueOn;
     
-    // Only get flow IDs if streams are enabled
+    // Only get flow ID if video stream is enabled
     if (settings.video_enabled) {
         settings.video_flow_id = [[videoField stringValue] UTF8String];
         if (settings.video_flow_id.empty()) {
             settings.video_flow_id = MXLNativeDialog::GenerateUUID();
-        }
-    }
-    
-    if (settings.audio_enabled) {
-        settings.audio_flow_id = [[audioField stringValue] UTF8String];
-        if (settings.audio_flow_id.empty()) {
-            settings.audio_flow_id = MXLNativeDialog::GenerateUUID();
         }
     }
 }
@@ -162,12 +121,9 @@
 // macOS implementation using Cocoa
 bool MXLNativeDialog::ShowSettingsDialog_macOS(Settings& settings) {
     @autoreleasepool {
-        // Auto-populate flow IDs if empty
+        // Auto-populate flow ID if empty
         if (settings.video_flow_id.empty()) {
             settings.video_flow_id = GenerateUUID();
-        }
-        if (settings.audio_flow_id.empty()) {
-            settings.audio_flow_id = GenerateUUID();
         }
         
         NSAlert *alert = [[NSAlert alloc] init];
@@ -176,8 +132,8 @@ bool MXLNativeDialog::ShowSettingsDialog_macOS(Settings& settings) {
         [alert addButtonWithTitle:@"OK"];
         [alert addButtonWithTitle:@"Cancel"];
         
-        // Create wider custom view with form controls (increased height for status)
-        MXLDialogView *accessoryView = [[MXLDialogView alloc] initWithFrame:NSMakeRect(0, 0, 520, 270)];
+        // Create custom view with form controls (reduced height since audio controls removed)
+        MXLDialogView *accessoryView = [[MXLDialogView alloc] initWithFrame:NSMakeRect(0, 0, 520, 290)];
         [accessoryView setupControls:settings];
         
         [alert setAccessoryView:accessoryView];

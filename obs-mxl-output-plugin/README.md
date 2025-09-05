@@ -1,10 +1,11 @@
 # OBS MXL Output Plugin
 
-This plugin allows OBS Studio to output video and audio streams in MXL (Media Exchange Layer) format, enabling real-time media exchange between applications using the MXL framework.
+This plugin allows OBS Studio to output video streams in MXL (Media Exchange Layer) format, enabling real-time media exchange between applications using the MXL framework.
 
 ## ⚠️ Important Notes
 
 - **Resolution Requirement**: Currently only works with **1920x1080** resolution. In OBS, go to Settings → Video → Output (Scaled) Resolution and set to 1920x1080.
+- **Video Only**: Currently only supports video output. Audio support is coming soon.
 - **Platform Support**: Currently working on **macOS** and **Linux** only. Windows support is under development.
 
 ## Screenshot
@@ -13,13 +14,10 @@ This plugin allows OBS Studio to output video and audio streams in MXL (Media Ex
 
 ## Features
 
-- **Real-time Output**: Stream OBS video and audio output directly to MXL flows
-- **Dual Stream Support**: Separate video and audio flows with independent configuration
+- **Real-time Output**: Stream OBS video output directly to MXL flows
 - **Native Configuration Dialog**: Clean, platform-native settings interface
-- **Format Support**: Supports various video and audio formats from OBS
 - **Flow Management**: Automatic creation of MXL flow descriptors and writers
 - **Cross-platform**: Works on macOS and Linux
-- **Independent Configuration**: File-based config system independent of OBS settings
 
 ## Requirements
 
@@ -38,24 +36,29 @@ This plugin allows OBS Studio to output video and audio streams in MXL (Media Ex
 ### macOS
 
 ```bash
-# Set paths (adjust as needed)
-export OBS_SOURCE_DIR="/path/to/obs-studio"
-export MXL_SDK_PREFIX="/path/to/mxl-sdk/usr/local"
+# The build script will use default paths:
+# OBS_SOURCE_DIR: $HOME/obs-studio
+# MXL_SDK_PREFIX: $HOME/mxl-sdk/usr/local
 
-# Build
-./build.sh
+# Build with defaults
+./build-macos.sh
+
+# Or specify custom paths
+OBS_SOURCE_DIR=/path/to/obs-studio MXL_SDK_PREFIX=/path/to/mxl-sdk ./build-macos.sh
 ```
 
 ### Linux
 
 ```bash
-# Install OBS development packages
-sudo apt install obs-studio-dev  # Ubuntu/Debian
-# or build OBS from source
-
-# Build
-./build_linux.sh
+# The script will check for dependencies and guide you through installation
+./build-linux.sh
 ```
+
+The Linux build script will automatically:
+- Check for required packages (build-essential, cmake, pkg-config, libgtk-3-dev)
+- Detect OBS Studio installation and headers
+- Find MXL SDK in common locations
+- Guide you through installing missing dependencies
 
 ### Manual Build
 
@@ -85,9 +88,7 @@ After installation, restart OBS Studio to load the plugin.
    - **MXL Domain Path**: Path to your MXL domain directory
    - **Enable MXL Output**: Master toggle for the output
    - **Enable Video Stream**: Toggle video stream output
-   - **Enable Audio Stream**: Toggle audio stream output
    - **Video Flow ID**: UUID for the video flow (auto-generated if empty)
-   - **Audio Flow ID**: UUID for the audio flow (auto-generated if empty)
 
 3. **Apply Changes**: Click OK to save and immediately apply settings
 
@@ -133,36 +134,6 @@ The plugin automatically creates NMOS-style flow descriptor JSON files for each 
 }
 ```
 
-### Audio Flow Descriptor
-```json
-{
-  "description": "MXL Audio Output Flow",
-  "id": "audio-flow-uuid",
-  "format": "urn:x-nmos:format:audio",
-  "media_type": "audio/x-raw",
-  "sample_rate": {
-    "numerator": 48000,
-    "denominator": 1
-  },
-  "channels": 2
-}
-```
-
-## Consuming MXL Flows
-
-Once the output plugin is running, other applications can consume the MXL flows using the MXL SDK:
-
-```cpp
-// Example consumer code
-mxlInstance instance = mxlCreateInstance("/path/to/mxl_domain", "");
-mxlFlowReader reader;
-mxlCreateFlowReader(instance, "video-flow-uuid", "", &reader);
-
-// Read grains...
-GrainInfo grainInfo;
-uint8_t* payload;
-mxlFlowReaderReadGrain(reader, &grainInfo, &payload);
-```
 
 ## Configuration File
 
@@ -204,40 +175,19 @@ This file persists settings independently of OBS configuration and can be manual
 The plugin uses OBS's logging system with clean, focused output:
 
 ```
-=== LOADING MXL OUTPUT PLUGIN v1.0.0 ===
+=== LOADING MXL OUTPUT PLUGIN v0.0.1 ===
 MXL Output: Output type registered successfully
-MXL Output: Settings updated - Output: enabled, Video: enabled, Audio: disabled
+MXL Output: Settings updated - Output: enabled, Video: enabled
 MXL Output: Starting output
-MXL Output: Output started successfully - Video: enabled, Audio: disabled
+MXL Output: Output started successfully - Video: enabled
 ```
 
 Enable OBS debug logging to see detailed MXL operations.
 
-## Integration with MXL Input Plugin
-
-This output plugin works seamlessly with the MXL input plugin, enabling:
-
-- **Local Loopback**: Output from one OBS instance, input to another
-- **Network Distribution**: Multiple consumers of the same MXL flows
-- **Processing Pipelines**: Chain multiple MXL-enabled applications
-
-## Architecture
-
-### Clean, Modern Design
-- **Native Configuration**: Platform-native dialog interface
-- **File-based Config**: Independent configuration system
-- **No Deprecated APIs**: Uses modern OBS plugin patterns
-- **Minimal Dependencies**: Clean, focused codebase
-
-### Key Components
-- **Core Output Engine**: Handles OBS integration and MXL flow creation
-- **Native Dialog System**: Cross-platform configuration interface
-- **Configuration Manager**: File-based settings persistence
-- **Flow Management**: Automatic MXL flow descriptor generation
 
 ## License
 
-This plugin is licensed under the Apache 2.0 License, consistent with the MXL project.
+This plugin is licensed under the Apache 2.0 License.
 
 ## Contributing
 

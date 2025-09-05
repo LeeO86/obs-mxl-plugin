@@ -1,6 +1,15 @@
 #!/bin/bash
 
 # MXL Output Plugin Build Script
+#
+# Environment Variables (macOS only):
+#   OBS_SOURCE_DIR  - Path to OBS Studio source directory (default: $HOME/obs-studio)
+#   MXL_SDK_PREFIX  - Path to MXL SDK installation prefix (default: $HOME/mxl-sdk/usr/local)
+#
+# Example usage:
+#   ./build.sh
+#   OBS_SOURCE_DIR=/path/to/obs MXL_SDK_PREFIX=/path/to/mxl ./build.sh
+#
 set -e
 
 # Colors for output
@@ -44,11 +53,18 @@ cd "$BUILD_DIR"
 # Configure with CMake
 echo -e "${YELLOW}Configuring with CMake...${NC}"
 if [[ "$PLATFORM" == "macOS" ]]; then
+    # Set default paths if not provided
+    OBS_SOURCE_DIR="${OBS_SOURCE_DIR:-$HOME/obs-studio}"
+    MXL_SDK_PREFIX="${MXL_SDK_PREFIX:-$HOME/mxl-sdk/usr/local}"
+    
+    echo "Using OBS source directory: $OBS_SOURCE_DIR"
+    echo "Using MXL SDK prefix: $MXL_SDK_PREFIX"
+    
     cmake .. \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_OSX_ARCHITECTURES=arm64 \
-        -DOBS_SOURCE_DIR="/Users/samisb/obs-studio" \
-        -DMXL_SDK_PREFIX="/Users/samisb/mxl-sdk/usr/local"
+        -DOBS_SOURCE_DIR="$OBS_SOURCE_DIR" \
+        -DMXL_SDK_PREFIX="$MXL_SDK_PREFIX"
 else
     cmake .. \
         -DCMAKE_BUILD_TYPE=Release
@@ -67,7 +83,7 @@ if [[ "$PLATFORM" == "macOS" ]]; then
     # Fix library paths for MXL SDK on macOS
     echo -e "${YELLOW}Fixing MXL library paths...${NC}"
     PLUGIN_PATH="$INSTALL_DIR/obs-mxl-output-plugin.plugin/Contents/MacOS/obs-mxl-output-plugin.so"
-    MXL_SDK_PATH="$HOME/mxl-sdk/usr/local/lib/libmxl.0.dylib"
+    MXL_SDK_PATH="${MXL_SDK_PREFIX:-$HOME/mxl-sdk/usr/local}/lib/libmxl.0.dylib"
 
     if [ -f "$PLUGIN_PATH" ]; then
         # Fix MXL library path

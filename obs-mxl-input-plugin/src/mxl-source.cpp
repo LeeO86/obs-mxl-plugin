@@ -11,7 +11,7 @@
 #include <unistd.h>
 
 // Version and build information
-#define MXL_PLUGIN_VERSION "1.0.0"
+#define MXL_PLUGIN_VERSION "0.0.1-alpha"
 #define MXL_BUILD_ID __DATE__ "_" __TIME__
 #define MXL_BUILD_TIMESTAMP __DATE__ " " __TIME__
 
@@ -472,12 +472,15 @@ obs_properties_t *mxl_source_get_properties(void *data)
              MXL_PLUGIN_VERSION, MXL_BUILD_ID);
     obs_properties_add_text(props, "version_info", "Plugin Version", OBS_TEXT_INFO);
     
+    // Audio limitation notice
+    obs_properties_add_text(props, "audio_notice", "Note: Audio flows are not yet implemented", OBS_TEXT_INFO);
+    
     // Domain path input with callback
     obs_property_t *domain_prop = obs_properties_add_text(props, "domain_path", "MXL Domain Path", OBS_TEXT_DEFAULT);
     obs_property_set_modified_callback(domain_prop, domain_path_changed);
     
     // Flow selection dropdown
-    obs_property_t *flow_prop = obs_properties_add_list(props, "flow_id", "Available Flows", 
+    obs_property_t *flow_prop = obs_properties_add_list(props, "flow_id", "Available Video Flows", 
                                                        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
     
     // Add initial placeholder

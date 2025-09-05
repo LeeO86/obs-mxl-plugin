@@ -55,36 +55,27 @@ cmake --install . --prefix ~/mxl-sdk
 
 **macOS:**
 ```bash
-cd obs-mxl-plugin
-./build.sh
+cd obs-mxl-input-plugin
+./build-macos.sh
 ```
 
 **Linux:**
 ```bash
-cd obs-mxl-plugin
+cd obs-mxl-input-plugin
 
-# Option 1: Use the setup script (recommended)
-./setup-obs-dev-linux.sh
-
-# Option 2: Manual installation
-# Install basic dependencies
-sudo apt update
-sudo apt install build-essential cmake pkg-config git
-
-# Install OBS Studio from PPA
-sudo add-apt-repository ppa:obsproject/obs-studio
-sudo apt update
-sudo apt install obs-studio
-
-# Then build the plugin
-./build.sh
-# Or use the Linux helper script:
+# Use the Linux setup script (recommended)
 ./build-linux.sh
 ```
 
+The Linux build script will automatically:
+- Check for required dependencies (build-essential, cmake, pkg-config)
+- Verify OBS Studio installation and headers
+- Set up proper environment variables
+- Build and install the plugin
+
 ## Installation
 
-The build script automatically installs the plugin to:
+The build scripts automatically install the plugin to:
 
 **macOS:**
 ```
@@ -95,6 +86,8 @@ The build script automatically installs the plugin to:
 ```
 ~/.config/obs-studio/plugins/obs-mxl-plugin/
 ```
+
+The scripts also handle platform-specific library path configuration automatically.
 
 ## Usage
 
@@ -119,40 +112,6 @@ The build script automatically installs the plugin to:
    ./mxl-gst-videotestsrc -d /tmp/mxl_domain -f flow_config.json
    ```
 
-## Configuration
-
-### MXL Domain Setup
-
-The MXL domain should typically be on a tmpfs filesystem for best performance:
-
-```bash
-# Create tmpfs mount (Linux)
-sudo mkdir -p /tmp/mxl_domain
-sudo mount -t tmpfs -o size=1G tmpfs /tmp/mxl_domain
-
-# macOS uses memory-backed filesystem by default in /tmp
-mkdir -p /tmp/mxl_domain
-```
-
-### Flow Configuration
-
-MXL flows are configured using NMOS Flow JSON format. Example:
-
-```json
-{
-  "description": "Test Video Flow",
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "format": "urn:x-nmos:format:video",
-  "label": "Test Video",
-  "media_type": "video/raw",
-  "grain_rate": {
-    "numerator": 30,
-    "denominator": 1
-  },
-  "frame_width": 1920,
-  "frame_height": 1080
-}
-```
 
 ## Supported Video Formats
 
@@ -210,10 +169,3 @@ This plugin follows the same license as the MXL SDK (Apache 2.0).
 3. Make your changes
 4. Test thoroughly
 5. Submit a pull request
-
-## Support
-
-For issues related to:
-- **MXL SDK**: Check the main MXL repository
-- **OBS Integration**: Create an issue in this repository
-- **OBS Studio**: Check OBS Studio documentation and forums

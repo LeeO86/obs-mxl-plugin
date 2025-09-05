@@ -1,6 +1,5 @@
 #include "mxl-output.h"
 #include "mxl-config.h"
-#include <media-io/audio-io.h>
 #include <random>
 #include <sstream>
 #include <iomanip>
@@ -14,8 +13,8 @@ extern "C" {
     bool mxl_output_start(void *data);
     void mxl_output_stop(void *data, uint64_t ts);
     void mxl_output_raw_video(void *data, struct video_data *frame);
-    void mxl_output_raw_audio(void *data, struct audio_data *frame);
-    void mxl_output_raw_audio2(void *data, size_t idx, struct audio_data *frame);
+    void mxl_output_raw_audio(void *data, struct audio_data *frames);
+    void mxl_output_raw_audio2(void *data, size_t idx, struct audio_data *frames);
     void mxl_output_update(void *data, obs_data_t *settings);
     bool mxl_output_pause(void *data, bool pause);
     uint64_t mxl_output_get_total_bytes(void *data);
@@ -23,6 +22,7 @@ extern "C" {
 }
 
 // OBS output callback implementations
+extern "C" {
 
 const char *mxl_output_get_name(void *unused)
 {
@@ -40,9 +40,7 @@ void *mxl_output_create(obs_data_t *settings, obs_output_t *output)
     // Get settings
     data->domain_path = obs_data_get_string(settings, "domain_path");
     data->video_flow_id = obs_data_get_string(settings, "video_flow_id");
-    data->audio_flow_id = obs_data_get_string(settings, "audio_flow_id");
     data->video_enabled = obs_data_get_bool(settings, "video_enabled");
-    data->audio_enabled = obs_data_get_bool(settings, "audio_enabled");
     
     // Get video info from OBS
     obs_video_info ovi;
@@ -59,50 +57,11 @@ void *mxl_output_create(obs_data_t *settings, obs_output_t *output)
             data->video_frame_interval_ns = (1000000000ULL * ovi.fps_den) / ovi.fps_num;
         }
     }
+
     
-    // Get audio info from OBS
-    obs_audio_info oai;
-    if (obs_get_audio_info(&oai)) {
-        data->audio_sample_rate = oai.samples_per_sec;
-        // Calculate channel count from speaker layout
-        switch (oai.speakers) {
-            case SPEAKERS_MONO:
-                data->audio_channels = 1;
-                break;
-            case SPEAKERS_STEREO:
-                data->audio_channels = 2;
-                break;
-            case SPEAKERS_2POINT1:
-                data->audio_channels = 3;
-                break;
-            case SPEAKERS_4POINT0:
-                data->audio_channels = 4;
-                break;
-            case SPEAKERS_4POINT1:
-                data->audio_channels = 5;
-                break;
-            case SPEAKERS_5POINT1:
-                data->audio_channels = 6;
-                break;
-            case SPEAKERS_7POINT1:
-                data->audio_channels = 8;
-                break;
-            default:
-                data->audio_channels = 2; // Default to stereo
-        }
-        data->audio_format = AUDIO_FORMAT_FLOAT_PLANAR; // OBS typically uses float planar
-        data->audio_media_type = data->get_mxl_audio_media_type(data->audio_format);
-        
-        // Calculate audio frame interval (assuming 1024 samples per frame)
-        if (oai.samples_per_sec > 0) {
-            data->audio_frame_interval_ns = (1000000000ULL * 1024) / oai.samples_per_sec;
-        }
-    }
-    
-    blog(LOG_INFO, "MXL Output: Created output instance - Video: %dx%d@%.2ffps, Audio: %dHz %dch",
+    blog(LOG_INFO, "MXL Output: Created output instance - Video: %dx%d@%.2ffps",
          data->video_width, data->video_height,
-         (double)data->video_fps_num / data->video_fps_den,
-         data->audio_sample_rate, data->audio_channels);
+         (double)data->video_fps_num / data->video_fps_den);
     
     return data;
 }
@@ -133,7 +92,7 @@ bool mxl_output_start(void *data)
         return false;
     }
     
-    // Connect to OBS video and audio sources
+    // Connect to OBS video sources
     obs_output_t *output = output_data->output;
     
     // Connect to video
@@ -141,12 +100,7 @@ bool mxl_output_start(void *data)
     if (video) {
         obs_output_set_video_conversion(output, nullptr);
     }
-    
-    // Connect to audio
-    audio_t *audio = obs_get_audio();
-    if (audio) {
-        obs_output_set_audio_conversion(output, nullptr);
-    }
+
     
     // Start data capture
     if (video) {
@@ -158,13 +112,12 @@ bool mxl_output_start(void *data)
     output_data->output_active = true;
     output_data->start_timestamp = output_data->get_timestamp_ns();
     output_data->video_grain_index = 0;
-    output_data->audio_grain_index = 0;
+    output_data->video_grain_index = 0;
     
     try {
         output_data->output_thread = std::thread(&mxl_output_data::output_loop, output_data);
-        blog(LOG_INFO, "MXL Output: Output started successfully - Video: %s, Audio: %s", 
-             output_data->video_enabled ? "enabled" : "disabled",
-             output_data->audio_enabled ? "enabled" : "disabled");
+        blog(LOG_INFO, "MXL Output: Output started successfully - Video: %s", 
+             output_data->video_enabled ? "enabled" : "disabled");
     } catch (const std::exception& e) {
         blog(LOG_ERROR, "MXL Output: Failed to start output thread: %s", e.what());
         output_data->thread_active = false;
@@ -252,62 +205,7 @@ void mxl_output_raw_video(void *data, struct video_data *frame)
     output_data->frame_condition.notify_one();
 }
 
-void mxl_output_raw_audio(void *data, struct audio_data *frame)
-{
-    mxl_output_data *output_data = static_cast<mxl_output_data*>(data);
-    if (!output_data || !output_data->output_active || !output_data->audio_enabled || !frame) {
-        return;
-    }
-    
-    static uint64_t audio_frame_count = 0;
-    audio_frame_count++;
-    
-    if (audio_frame_count % 1000 == 1) { // Log every 1000th audio frame (about every 20 seconds at 48kHz)
-        blog(LOG_INFO, "MXL Output: Received audio frame %" PRIu64 " (frames: %u, timestamp: %" PRIu64 ")", 
-             audio_frame_count, frame->frames, frame->timestamp);
-    }
-    
-    // Create audio frame data
-    auto audio_frame = std::make_unique<audio_frame_data>();
-    audio_frame->sample_rate = output_data->audio_sample_rate;
-    audio_frame->channels = output_data->audio_channels;
-    audio_frame->format = output_data->audio_format;
-    audio_frame->timestamp = frame->timestamp;
-    
-    // Calculate frame size - use actual frame count from OBS
-    audio_frame->size = output_data->calculate_audio_frame_size(
-        audio_frame->format, audio_frame->channels, frame->frames);
-    
-    // Allocate and copy frame data
-    audio_frame->data = static_cast<uint8_t*>(bmalloc(audio_frame->size));
-    if (!audio_frame->data) {
-        blog(LOG_ERROR, "MXL Output: Failed to allocate audio frame buffer");
-        return;
-    }
-    
-    // Copy audio data (planar format)
-    size_t bytes_per_sample = 4; // float
-    size_t channel_size = frame->frames * bytes_per_sample;
-    
-    // For planar audio, copy each channel sequentially
-    for (size_t ch = 0; ch < audio_frame->channels && ch < MAX_AV_PLANES; ch++) {
-        if (frame->data[ch]) {
-            memcpy(audio_frame->data + (ch * channel_size), frame->data[ch], channel_size);
-        }
-    }
-    
-    // Add to queue
-    {
-        std::lock_guard<std::mutex> lock(output_data->audio_queue_mutex);
-        output_data->audio_queue.push(std::move(audio_frame));
-        
-        if (audio_frame_count % 1000 == 1) {
-            blog(LOG_INFO, "MXL Output: Audio queue size: %zu", output_data->audio_queue.size());
-        }
-    }
-    
-    output_data->frame_condition.notify_one();
-}
+
 
 bool mxl_output_pause(void *data, bool pause)
 {
@@ -325,8 +223,7 @@ uint64_t mxl_output_get_total_bytes(void *data)
     }
     
     // Return approximate bytes based on grain count
-    return output_data->video_grain_index * 1920 * 1080 * 3 + 
-           output_data->audio_grain_index * 1024 * 4;
+    return output_data->video_grain_index * 1920 * 1080 * 3;
 }
 
 int mxl_output_get_dropped_frames(void *data)
@@ -335,6 +232,22 @@ int mxl_output_get_dropped_frames(void *data)
     // For now, we don't track dropped frames
     return 0;
 }
+
+void mxl_output_raw_audio2(void *data, size_t idx, struct audio_data *frames)
+{
+    UNUSED_PARAMETER(data);
+    UNUSED_PARAMETER(idx);
+    UNUSED_PARAMETER(frames);
+    // Audio not supported - do nothing
+}
+
+void mxl_output_raw_audio(void *data, struct audio_data *frames)
+{
+    UNUSED_PARAMETER(data);
+    UNUSED_PARAMETER(frames);
+    // Audio not supported - do nothing
+}
+
 void mxl_output_update(void *data, obs_data_t *settings)
 {
     mxl_output_data *output_data = static_cast<mxl_output_data*>(data);
@@ -345,9 +258,7 @@ void mxl_output_update(void *data, obs_data_t *settings)
     config->DomainPath = obs_data_get_string(settings, "domain_path");
     config->OutputEnabled = obs_data_get_bool(settings, "output_enabled");
     config->VideoEnabled = obs_data_get_bool(settings, "video_enabled");
-    config->AudioEnabled = obs_data_get_bool(settings, "audio_enabled");
     config->VideoFlowId = obs_data_get_string(settings, "video_flow_id");
-    config->AudioFlowId = obs_data_get_string(settings, "audio_flow_id");
     
     // Save to file
     config->Save();
@@ -356,29 +267,13 @@ void mxl_output_update(void *data, obs_data_t *settings)
     if (output_data) {
         output_data->domain_path = config->DomainPath;
         output_data->video_flow_id = config->VideoFlowId;
-        output_data->audio_flow_id = config->AudioFlowId;
         output_data->video_enabled = config->VideoEnabled;
-        output_data->audio_enabled = config->AudioEnabled;
-    }
-}
-
-void mxl_output_raw_audio2(void *data, size_t idx, struct audio_data *frame)
-{
-    mxl_output_data *output_data = static_cast<mxl_output_data*>(data);
-    if (!output_data || !output_data->audio_enabled || !frame) {
-        return;
     }
     
-    // For now, we only handle the first audio track (idx == 0)
-    // Multi-track support can be added later if needed
-    if (idx == 0) {
-        // Delegate to the regular raw_audio function
-        mxl_output_raw_audio(data, frame);
-    }
-    
-    // Additional tracks (idx > 0) are ignored for now
     // In a full implementation, you might want to:
-    // - Create separate MXL flows for each audio track
+    // - Create separate MXL flows for each video track
     // - Mix multiple tracks into a single output
     // - Allow user configuration of which tracks to use
 }
+
+} // extern "C"

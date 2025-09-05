@@ -28,9 +28,7 @@ MXLConfig::MXLConfig() :
     OutputEnabled(false),
     DomainPath(std::string(getenv("HOME")) + "/mxl_domain"),
     VideoEnabled(true),
-    AudioEnabled(true),
-    VideoFlowId(""),
-    AudioFlowId("")
+    VideoFlowId("")
 {
     // Constructor - defaults are set above
     // Actual loading happens in Load() method
@@ -49,15 +47,12 @@ void MXLConfig::Load() {
         OutputEnabled = config_get_bool(config, MXL_SECTION_NAME, MXL_PARAM_OUTPUT_ENABLED);
         DomainPath = config_get_string(config, MXL_SECTION_NAME, MXL_PARAM_DOMAIN_PATH);
         VideoEnabled = config_get_bool(config, MXL_SECTION_NAME, MXL_PARAM_VIDEO_ENABLED);
-        AudioEnabled = config_get_bool(config, MXL_SECTION_NAME, MXL_PARAM_AUDIO_ENABLED);
         VideoFlowId = config_get_string(config, MXL_SECTION_NAME, MXL_PARAM_VIDEO_FLOW_ID);
-        AudioFlowId = config_get_string(config, MXL_SECTION_NAME, MXL_PARAM_AUDIO_FLOW_ID);
         
-        blog(LOG_INFO, "MXL Config: Loaded - Output: %s, Domain: %s, Video: %s, Audio: %s",
+        blog(LOG_INFO, "MXL Config: Loaded - Output: %s, Domain: %s, Video: %s",
              OutputEnabled ? "enabled" : "disabled",
              DomainPath.c_str(),
-             VideoEnabled ? "enabled" : "disabled", 
-             AudioEnabled ? "enabled" : "disabled");
+             VideoEnabled ? "enabled" : "disabled");
         
         config_close(config);
     } else {
@@ -78,15 +73,12 @@ void MXLConfig::Save() {
         config_set_bool(config, MXL_SECTION_NAME, MXL_PARAM_OUTPUT_ENABLED, OutputEnabled);
         config_set_string(config, MXL_SECTION_NAME, MXL_PARAM_DOMAIN_PATH, DomainPath.c_str());
         config_set_bool(config, MXL_SECTION_NAME, MXL_PARAM_VIDEO_ENABLED, VideoEnabled);
-        config_set_bool(config, MXL_SECTION_NAME, MXL_PARAM_AUDIO_ENABLED, AudioEnabled);
         config_set_string(config, MXL_SECTION_NAME, MXL_PARAM_VIDEO_FLOW_ID, VideoFlowId.c_str());
-        config_set_string(config, MXL_SECTION_NAME, MXL_PARAM_AUDIO_FLOW_ID, AudioFlowId.c_str());
         
-        blog(LOG_INFO, "MXL Config: Saving - Output: %s, Domain: %s, Video: %s, Audio: %s",
+        blog(LOG_INFO, "MXL Config: Saving - Output: %s, Domain: %s, Video: %s",
              OutputEnabled ? "enabled" : "disabled",
              DomainPath.c_str(),
-             VideoEnabled ? "enabled" : "disabled", 
-             AudioEnabled ? "enabled" : "disabled");
+             VideoEnabled ? "enabled" : "disabled");
         
         int save_result = config_save(config);
         if (save_result == CONFIG_SUCCESS) {

@@ -12,7 +12,7 @@
 #include <inttypes.h>
 
 // Version and build information
-#define MXL_OUTPUT_PLUGIN_VERSION "1.0.0"
+#define MXL_OUTPUT_PLUGIN_VERSION "0.0.1"
 #define MXL_BUILD_ID __DATE__ "_" __TIME__
 #define MXL_BUILD_TIMESTAMP __DATE__ " " __TIME__
 
@@ -25,24 +25,17 @@ mxl_output_data::mxl_output_data()
     : output(nullptr)
     , mxl_instance(nullptr)
     , video_flow_writer(nullptr)
-    , audio_flow_writer(nullptr)
     , video_enabled(true)
-    , audio_enabled(true)
     , video_width(0)
     , video_height(0)
     , video_fps_num(30)
     , video_fps_den(1)
     , video_format(VIDEO_FORMAT_NONE)
-    , audio_sample_rate(48000)
-    , audio_channels(2)
-    , audio_format(AUDIO_FORMAT_UNKNOWN)
     , thread_active(false)
     , output_active(false)
     , video_grain_index(0)
-    , audio_grain_index(0)
     , start_timestamp(0)
     , video_frame_interval_ns(33333333) // Default to ~30fps
-    , audio_frame_interval_ns(21333333) // Default to ~48kHz with 1024 samples
 {
 }
 
@@ -116,25 +109,15 @@ bool mxl_output_data::initialize_mxl()
         return false;
     }
     
-    // Generate flow IDs if not set
+    // Generate flow ID if not set
     if (video_enabled && video_flow_id.empty()) {
         video_flow_id = generate_uuid();
         blog(LOG_INFO, "MXL Output: Generated video flow ID: %s", video_flow_id.c_str());
     }
     
-    if (audio_enabled && audio_flow_id.empty()) {
-        audio_flow_id = generate_uuid();
-        blog(LOG_INFO, "MXL Output: Generated audio flow ID: %s", audio_flow_id.c_str());
-    }
-    
-    // Create flows using mxlCreateFlow (which handles descriptor creation)
+    // Create video flow using mxlCreateFlow (which handles descriptor creation)
     if (video_enabled && !create_video_flow()) {
         blog(LOG_ERROR, "MXL Output: Failed to create video flow");
-        return false;
-    }
-    
-    if (audio_enabled && !create_audio_flow()) {
-        blog(LOG_ERROR, "MXL Output: Failed to create audio flow");
         return false;
     }
     
@@ -161,31 +144,16 @@ void mxl_output_data::cleanup_mxl()
         }
     }
     
-    {
-        std::lock_guard<std::mutex> lock(audio_queue_mutex);
-        while (!audio_queue.empty()) {
-            audio_queue.pop();
-        }
-    }
-    
     // Release MXL resources
     if (video_flow_writer) {
         mxlReleaseFlowWriter(mxl_instance, video_flow_writer);
         video_flow_writer = nullptr;
     }
     
-    if (audio_flow_writer) {
-        mxlReleaseFlowWriter(mxl_instance, audio_flow_writer);
-        audio_flow_writer = nullptr;
-    }
-    
     // Destroy flows (like GStreamer example)
     if (mxl_instance) {
         if (!video_flow_id.empty()) {
             mxlDestroyFlow(mxl_instance, video_flow_id.c_str());
-        }
-        if (!audio_flow_id.empty()) {
-            mxlDestroyFlow(mxl_instance, audio_flow_id.c_str());
         }
         mxlDestroyInstance(mxl_instance);
         mxl_instance = nullptr;
@@ -222,35 +190,6 @@ bool mxl_output_data::create_video_flow()
     return true;
 }
 
-bool mxl_output_data::create_audio_flow()
-{
-    if (!audio_enabled || audio_flow_id.empty()) {
-        return true;
-    }
-    
-    // Create the flow using the descriptor
-    std::string flow_descriptor = generate_flow_descriptor_json(false);
-    FlowInfo flow_info_temp;
-    
-    mxlStatus status = mxlCreateFlow(mxl_instance, flow_descriptor.c_str(), nullptr, &flow_info_temp);
-    if (status != MXL_STATUS_OK) {
-        blog(LOG_ERROR, "MXL Output: Failed to create audio flow (status: %d)", status);
-        return false;
-    }
-    
-    // Create the flow writer
-    status = mxlCreateFlowWriter(mxl_instance, audio_flow_id.c_str(), "", &audio_flow_writer);
-    if (status != MXL_STATUS_OK) {
-        blog(LOG_ERROR, "MXL Output: Failed to create audio flow writer for flow: %s (status: %d)", 
-             audio_flow_id.c_str(), status);
-        
-        // Clean up the flow we created
-        mxlDestroyFlow(mxl_instance, audio_flow_id.c_str());
-        return false;
-    }
-    
-    return true;
-}
 
 bool mxl_output_data::create_video_flow_descriptor()
 {
@@ -284,37 +223,6 @@ bool mxl_output_data::create_video_flow_descriptor()
     return true;
 }
 
-bool mxl_output_data::create_audio_flow_descriptor()
-{
-    if (!audio_enabled || audio_flow_id.empty()) {
-        return true;
-    }
-    
-    std::string flow_dir = domain_path + "/" + audio_flow_id + FLOW_DIRECTORY_NAME_SUFFIX;
-    std::string descriptor_path = flow_dir + "/" + FLOW_DESCRIPTOR_FILE_NAME;
-    
-    // Create flow directory
-    try {
-        std::filesystem::create_directories(flow_dir);
-    } catch (const std::exception& e) {
-        blog(LOG_ERROR, "MXL Output: Failed to create audio flow directory: %s", e.what());
-        return false;
-    }
-    
-    // Generate and write descriptor JSON
-    std::string descriptor_json = generate_flow_descriptor_json(false);
-    std::ofstream descriptor_file(descriptor_path);
-    if (!descriptor_file.is_open()) {
-        blog(LOG_ERROR, "MXL Output: Failed to create audio flow descriptor file: %s", descriptor_path.c_str());
-        return false;
-    }
-    
-    descriptor_file << descriptor_json;
-    descriptor_file.close();
-    
-    blog(LOG_INFO, "MXL Output: Created audio flow descriptor: %s", descriptor_path.c_str());
-    return true;
-}
 
 std::string mxl_output_data::get_mxl_video_media_type(enum video_format format)
 {
@@ -322,23 +230,7 @@ std::string mxl_output_data::get_mxl_video_media_type(enum video_format format)
     return "video/v210";
 }
 
-std::string mxl_output_data::get_mxl_audio_media_type(enum audio_format format)
-{
-    switch (format) {
-        case AUDIO_FORMAT_U8BIT:
-        case AUDIO_FORMAT_16BIT:
-        case AUDIO_FORMAT_32BIT:
-        case AUDIO_FORMAT_FLOAT:
-            return "audio/x-raw";
-        case AUDIO_FORMAT_U8BIT_PLANAR:
-        case AUDIO_FORMAT_16BIT_PLANAR:
-        case AUDIO_FORMAT_32BIT_PLANAR:
-        case AUDIO_FORMAT_FLOAT_PLANAR:
-            return "audio/x-raw";
-        default:
-            return "audio/x-raw";
-    }
-}
+
 
 size_t mxl_output_data::calculate_video_frame_size(enum video_format format, uint32_t width, uint32_t height)
 {
@@ -349,63 +241,37 @@ size_t mxl_output_data::calculate_video_frame_size(enum video_format format, uin
     return v210_stride * height;
 }
 
-size_t mxl_output_data::calculate_audio_frame_size(enum audio_format format, uint32_t channels, uint32_t samples)
-{
-    size_t bytes_per_sample = 0;
-    
-    switch (format) {
-        case AUDIO_FORMAT_U8BIT:
-        case AUDIO_FORMAT_U8BIT_PLANAR:
-            bytes_per_sample = 1;
-            break;
-        case AUDIO_FORMAT_16BIT:
-        case AUDIO_FORMAT_16BIT_PLANAR:
-            bytes_per_sample = 2;
-            break;
-        case AUDIO_FORMAT_32BIT:
-        case AUDIO_FORMAT_32BIT_PLANAR:
-        case AUDIO_FORMAT_FLOAT:
-        case AUDIO_FORMAT_FLOAT_PLANAR:
-            bytes_per_sample = 4;
-            break;
-        default:
-            bytes_per_sample = 4; // Default to float
-    }
-    
-    return samples * channels * bytes_per_sample;
-}
 
 std::string mxl_output_data::generate_flow_descriptor_json(bool is_video)
 {
     std::stringstream ss;
     
-    if (is_video) {
-        ss << "{\n";
-        ss << "  \"description\": \"MXL Video Output Flow\",\n";
-        ss << "  \"id\": \"" << video_flow_id << "\",\n";
-        ss << "  \"tags\": {},\n";
-        ss << "  \"format\": \"urn:x-nmos:format:video\",\n";
-        ss << "  \"label\": \"MXL Video Output\",\n";
-        ss << "  \"parents\": [],\n";
-        ss << "  \"media_type\": \"video/v210\",\n";
-        ss << "  \"grain_rate\": {\n";
-        ss << "    \"numerator\": " << video_fps_num << ",\n";
-        ss << "    \"denominator\": " << video_fps_den << "\n";
-        ss << "  },\n";
-        ss << "  \"frame_width\": " << video_width << ",\n";
-        ss << "  \"frame_height\": " << video_height << ",\n";
-        ss << "  \"colorspace\": \"BT709\",\n";
-        ss << "  \"components\": [\n";
-        ss << "    {\n";
-        ss << "      \"name\": \"Y\",\n";
-        ss << "      \"width\": " << video_width << ",\n";
-        ss << "      \"height\": " << video_height << ",\n";
-        ss << "      \"bit_depth\": 10\n";
-        ss << "    },\n";
-        ss << "    {\n";
-        ss << "      \"name\": \"Cb\",\n";
-        ss << "      \"width\": " << (video_width / 2) << ",\n";
-        ss << "      \"height\": " << video_height << ",\n";
+    ss << "{\n";
+    ss << "  \"description\": \"MXL Video Output Flow\",\n";
+    ss << "  \"id\": \"" << video_flow_id << "\",\n";
+    ss << "  \"tags\": {},\n";
+    ss << "  \"format\": \"urn:x-nmos:format:video\",\n";
+    ss << "  \"label\": \"MXL Video Output\",\n";
+    ss << "  \"parents\": [],\n";
+    ss << "  \"media_type\": \"video/v210\",\n";
+    ss << "  \"grain_rate\": {\n";
+    ss << "    \"numerator\": " << video_fps_num << ",\n";
+    ss << "    \"denominator\": " << video_fps_den << "\n";
+    ss << "  },\n";
+    ss << "  \"frame_width\": " << video_width << ",\n";
+    ss << "  \"frame_height\": " << video_height << ",\n";
+    ss << "  \"colorspace\": \"BT709\",\n";
+    ss << "  \"components\": [\n";
+    ss << "    {\n";
+    ss << "      \"name\": \"Y\",\n";
+    ss << "      \"width\": " << video_width << ",\n";
+    ss << "      \"height\": " << video_height << ",\n";
+    ss << "      \"bit_depth\": 10\n";
+    ss << "    },\n";
+    ss << "    {\n";
+    ss << "      \"name\": \"Cb\",\n";
+    ss << "      \"width\": " << (video_width / 2) << ",\n";
+    ss << "      \"height\": " << video_height << ",\n";
         ss << "      \"bit_depth\": 10\n";
         ss << "    },\n";
         ss << "    {\n";
@@ -416,28 +282,6 @@ std::string mxl_output_data::generate_flow_descriptor_json(bool is_video)
         ss << "    }\n";
         ss << "  ]\n";
         ss << "}";
-    } else {
-        // Audio flow descriptor - simplified format
-        ss << "{\n";
-        ss << "  \"description\": \"MXL Audio Output Flow\",\n";
-        ss << "  \"id\": \"" << audio_flow_id << "\",\n";
-        ss << "  \"tags\": {},\n";
-        ss << "  \"format\": \"urn:x-nmos:format:audio\",\n";
-        ss << "  \"label\": \"MXL Audio Output\",\n";
-        ss << "  \"parents\": [],\n";
-        ss << "  \"media_type\": \"audio/x-raw\",\n";
-        ss << "  \"grain_rate\": {\n";
-        ss << "    \"numerator\": " << (audio_sample_rate / 1024) << ",\n";  // Assuming 1024 samples per grain
-        ss << "    \"denominator\": 1\n";
-        ss << "  },\n";
-        ss << "  \"sample_rate\": {\n";
-        ss << "    \"numerator\": " << audio_sample_rate << ",\n";
-        ss << "    \"denominator\": 1\n";
-        ss << "  },\n";
-        ss << "  \"channels\": " << audio_channels << ",\n";
-        ss << "  \"bit_depth\": 32\n";  // Float audio is 32-bit
-        ss << "}";
-    }
     
     return ss.str();
 }
@@ -451,7 +295,7 @@ void mxl_output_data::output_loop()
         
         // Wait for frames or thread termination with timeout
         frame_condition.wait_for(lock, std::chrono::milliseconds(100), [this] {
-            return !thread_active || !video_queue.empty() || !audio_queue.empty();
+            return !thread_active || !video_queue.empty();
         });
         
         if (!thread_active) {
@@ -469,22 +313,6 @@ void mxl_output_data::output_loop()
             }
             
             lock.lock();
-        }
-        
-        lock.unlock();
-        
-        // Process audio frames
-        std::unique_lock<std::mutex> audio_lock(audio_queue_mutex);
-        while (!audio_queue.empty()) {
-            auto frame = std::move(audio_queue.front());
-            audio_queue.pop();
-            audio_lock.unlock();
-            
-            if (!process_audio_frame(std::move(frame))) {
-                blog(LOG_WARNING, "MXL Output: Failed to process audio frame");
-            }
-            
-            audio_lock.lock();
         }
     }
     
@@ -546,63 +374,7 @@ bool mxl_output_data::process_video_frame(std::unique_ptr<video_frame_data> fram
     return true;
 }
 
-bool mxl_output_data::process_audio_frame(std::unique_ptr<audio_frame_data> frame)
-{
-    if (!audio_flow_writer || !frame) {
-        return false;
-    }
-    
-    // Use proper MXL timing for audio - match the video timing approach
-    // Audio grain rate should be based on actual audio frame delivery rate, not assumed 1024 samples
-    // For 48kHz audio with typical OBS frame sizes, this is usually around 46.875 Hz (1024 samples per frame)
-    Rational audio_grain_rate = {static_cast<int32_t>(audio_sample_rate / 1024), 1};
-    uint64_t grain_index = mxlGetCurrentIndex(&audio_grain_rate);
-    
-    // Log grain writing occasionally to avoid spam
-    static uint64_t last_logged_audio_grain = 0;
-    if (grain_index % 200 == 0 && grain_index != last_logged_audio_grain) {
-        blog(LOG_INFO, "MXL Output: Writing audio grain %" PRIu64 " (rate: %lld/%lld)", 
-             grain_index, (long long)audio_grain_rate.numerator, (long long)audio_grain_rate.denominator);
-        last_logged_audio_grain = grain_index;
-    }
-    
-    GrainInfo grain_info = {};
-    uint8_t* payload = nullptr;
-    
-    // Open grain for writing
-    mxlStatus status = mxlFlowWriterOpenGrain(audio_flow_writer, grain_index, &grain_info, &payload);
-    if (status != MXL_STATUS_OK) {
-        blog(LOG_ERROR, "MXL Output: Failed to open audio grain %" PRIu64 " (status: %d, expected size: %zu)", 
-             grain_index, status, frame->size);
-        return false;
-    }
-    
-    // Set grain info
-    grain_info.flags = 0;
-    
-    // Copy frame data to MXL payload
-    if (payload && frame->data && frame->size > 0) {
-        size_t copy_size = std::min(frame->size, static_cast<size_t>(grain_info.grainSize));
-        memcpy(payload, frame->data, copy_size);
-        grain_info.commitedSize = copy_size;
-        
-        blog(LOG_DEBUG, "MXL Output: Copied %zu bytes to audio grain %" PRIu64 " (grain size: %u)", 
-             copy_size, grain_index, grain_info.grainSize);
-    }
-    
-    // Commit the grain
-    status = mxlFlowWriterCommitGrain(audio_flow_writer, &grain_info);
-    if (status != MXL_STATUS_OK) {
-        blog(LOG_ERROR, "MXL Output: Failed to commit audio grain %" PRIu64 " (status: %d)", grain_index, status);
-        mxlFlowWriterCancelGrain(audio_flow_writer);
-        return false;
-    }
-    
-    // Update our counter for statistics
-    audio_grain_index.fetch_add(1);
-    
-    return true;
-}
+
 
 uint64_t mxl_output_data::get_timestamp_ns()
 {

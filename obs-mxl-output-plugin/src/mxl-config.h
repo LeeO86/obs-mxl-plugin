@@ -26,9 +26,7 @@
 #define MXL_PARAM_OUTPUT_ENABLED "OutputEnabled"
 #define MXL_PARAM_DOMAIN_PATH "DomainPath"
 #define MXL_PARAM_VIDEO_ENABLED "VideoEnabled"
-#define MXL_PARAM_AUDIO_ENABLED "AudioEnabled"
 #define MXL_PARAM_VIDEO_FLOW_ID "VideoFlowId"
-#define MXL_PARAM_AUDIO_FLOW_ID "AudioFlowId"
 
 class MXLConfig {
 public:
@@ -41,9 +39,7 @@ public:
     bool OutputEnabled;
     std::string DomainPath;
     bool VideoEnabled;
-    bool AudioEnabled;
     std::string VideoFlowId;
-    std::string AudioFlowId;
 
 private:
     static MXLConfig* _instance;
