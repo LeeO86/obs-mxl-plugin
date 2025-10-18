@@ -168,7 +168,7 @@ bool mxl_output_data::create_video_flow()
     
     // Create the flow using the descriptor
     std::string flow_descriptor = generate_flow_descriptor_json(true);
-    FlowInfo flow_info_temp;
+    mxlFlowInfo flow_info_temp;
     
     mxlStatus status = mxlCreateFlow(mxl_instance, flow_descriptor.c_str(), nullptr, &flow_info_temp);
     if (status != MXL_STATUS_OK) {
@@ -249,7 +249,9 @@ std::string mxl_output_data::generate_flow_descriptor_json(bool is_video)
     ss << "{\n";
     ss << "  \"description\": \"MXL Video Output Flow\",\n";
     ss << "  \"id\": \"" << video_flow_id << "\",\n";
-    ss << "  \"tags\": {},\n";
+    ss << "  \"tags\": {\n";
+    ss << "     \"urn:x-nmos:tag:grouphint/v1.0\": [\"obs:obs-output:device\"]\n";
+    ss << "  },\n";
     ss << "  \"format\": \"urn:x-nmos:format:video\",\n";
     ss << "  \"label\": \"MXL Video Output\",\n";
     ss << "  \"parents\": [],\n";
@@ -326,7 +328,7 @@ bool mxl_output_data::process_video_frame(std::unique_ptr<video_frame_data> fram
     }
     
     // Use proper MXL timing like GStreamer example - get current time-based index
-    Rational frame_rate = {static_cast<int32_t>(video_fps_num), static_cast<int32_t>(video_fps_den)};
+    mxlRational frame_rate = {static_cast<int32_t>(video_fps_num), static_cast<int32_t>(video_fps_den)};
     uint64_t grain_index = mxlGetCurrentIndex(&frame_rate);
     
     // Log grain writing occasionally to avoid spam
@@ -337,7 +339,7 @@ bool mxl_output_data::process_video_frame(std::unique_ptr<video_frame_data> fram
         last_logged_video_grain = grain_index;
     }
     
-    GrainInfo grain_info = {};
+    mxlGrainInfo grain_info = {};
     uint8_t* payload = nullptr;
     
     // Open grain for writing
@@ -354,8 +356,9 @@ bool mxl_output_data::process_video_frame(std::unique_ptr<video_frame_data> fram
     if (payload && frame->data && frame->size > 0) {
         size_t copy_size = std::min(frame->size, static_cast<size_t>(grain_info.grainSize));
         memcpy(payload, frame->data, copy_size);
-        grain_info.commitedSize = copy_size;
-        
+	//grain_info.commitedSize = copy_size;
+        grain_info.validSlices = grain_info.totalSlices;
+
         blog(LOG_DEBUG, "MXL Output: Copied %zu bytes to video grain %" PRIu64 " (grain size: %u)", 
              copy_size, grain_index, grain_info.grainSize);
     }

@@ -30,7 +30,7 @@ struct mxl_source_data {
     // MXL components
     mxlInstance mxl_instance;
     mxlFlowReader flow_reader;
-    FlowInfo flow_info;
+    mxlFlowInfo flow_info;
     
     // Configuration
     std::string domain_path;
@@ -60,7 +60,7 @@ struct mxl_source_data {
     bool initialize_mxl();
     void cleanup_mxl();
     void capture_loop();
-    bool process_grain(const GrainInfo &grain_info, uint8_t *payload);
+    bool process_grain(const mxlGrainInfo &grain_info, uint8_t *payload);
     enum video_format get_obs_format_from_mxl(const std::string &media_type);
     size_t calculate_frame_size(enum video_format format, uint32_t width, uint32_t height);
     void convert_v210_to_rgba(uint8_t *v210_data, size_t v210_size, 

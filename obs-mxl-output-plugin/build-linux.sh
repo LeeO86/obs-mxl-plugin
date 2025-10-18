@@ -49,6 +49,7 @@ check_obs_libraries() {
 # Check for MXL SDK
 check_mxl_sdk() {
     local mxl_paths=(
+	"$HOME/mxl-sdk"
         "/usr"
         "$HOME/mxl-sdk/usr/local"
         "/usr/local"

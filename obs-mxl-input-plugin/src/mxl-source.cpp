@@ -17,7 +17,7 @@
 
 // MXL flow directory constants (from PathUtils.hpp)
 constexpr auto const FLOW_DIRECTORY_NAME_SUFFIX = ".mxl-flow";
-constexpr auto const FLOW_DESCRIPTOR_FILE_NAME = ".json";
+constexpr auto const FLOW_DESCRIPTOR_FILE_NAME = "flow_def.json";
 
 // Simple JSON parser for flow descriptor
 class SimpleJsonParser {
@@ -221,7 +221,7 @@ void mxl_source_data::capture_loop()
     }
     
     while (thread_active) {
-        GrainInfo grain_info;
+        mxlGrainInfo grain_info;
         uint8_t *payload = nullptr;
         
         // Try to get the next grain with timeout
@@ -287,14 +287,14 @@ void mxl_source_data::capture_loop()
     blog(LOG_INFO, "MXL Source: Capture thread stopped");
 }
 
-bool mxl_source_data::process_grain(const GrainInfo &grain_info, uint8_t *payload)
+bool mxl_source_data::process_grain(const mxlGrainInfo &grain_info, uint8_t *payload)
 {
     if (!payload || grain_info.grainSize == 0) {
         return false;
     }
     
     // Check if grain is marked as invalid
-    if (grain_info.flags & GRAIN_FLAG_INVALID) {
+    if (grain_info.flags & MXL_GRAIN_FLAG_INVALID) {
         blog(LOG_DEBUG, "MXL Source: Received invalid grain, skipping");
         return false;
     }
