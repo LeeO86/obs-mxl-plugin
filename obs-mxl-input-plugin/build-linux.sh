@@ -9,7 +9,7 @@ echo "Setting up Linux build environment for OBS MXL Plugin..."
 
 # Check for required packages
 check_package() {
-    if ! dpkg -l | grep -q "^ii  $1 "; then
+    if ! dpkg -s "$1" > /dev/null 2>&1; then
         echo "Missing package: $1"
         return 1
     fi
@@ -102,7 +102,7 @@ export PKG_CONFIG_PATH="$HOME/mxl-sdk/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
 
 # Run the main build script
 echo "Running build script..."
-./build.sh
+./build-macos.sh
 
 echo ""
 echo "Linux build complete!"

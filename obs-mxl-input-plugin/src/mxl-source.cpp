@@ -71,6 +71,7 @@ mxl_source_data::mxl_source_data()
     , thread_active(false)
     , frame_data(nullptr)
     , frame_size(0)
+    , audio_buffer(nullptr)
     , width(0)
     , height(0)
     , format(VIDEO_FORMAT_NONE)
@@ -126,13 +127,13 @@ bool mxl_source_data::initialize_mxl()
         return false;
     }
     
-    // Check if this is a video flow
-    if (flow_info.common.format != MXL_DATA_FORMAT_VIDEO) {
-        blog(LOG_ERROR, "MXL Source: Flow is not a video flow (format: %d)", flow_info.common.format);
+    // Data flows is not supported
+    if (flow_info.common.format == MXL_DATA_FORMAT_DATA) {
+        blog(LOG_ERROR, "MXL Source: Data flows is not supported");
         return false;
     }
-    
-    // Read flow descriptor to get video-specific information
+
+    // Read flow descriptor to get flow-specific information
     std::string descriptor_path = domain_path + "/" + flow_id + FLOW_DIRECTORY_NAME_SUFFIX + "/" + FLOW_DESCRIPTOR_FILE_NAME;
     std::ifstream descriptor_file(descriptor_path);
     if (!descriptor_file.is_open()) {
@@ -144,8 +145,33 @@ bool mxl_source_data::initialize_mxl()
                                std::istreambuf_iterator<char>());
     descriptor_file.close();
     
-    SimpleJsonParser parser(flow_descriptor);
+    // Initialize audio
+    if (flow_info.common.format == MXL_DATA_FORMAT_AUDIO) {
+        if (! initialize_audio(flow_descriptor)) {
+            return false;
+        }
+        // Start capture thread
+        thread_active = true;
+        capture_thread = std::thread(&mxl_source_data::capture_loop_audio, this);
+        return true;
+    }
+
+    // Initialize video
+    if (flow_info.common.format == MXL_DATA_FORMAT_VIDEO) {
+        if (! initialize_video(flow_descriptor)) {
+            return false;
+        }
+        // Start capture thread
+        thread_active = true;
+        capture_thread = std::thread(&mxl_source_data::capture_loop_video, this);
+    }
     
+    return true;
+}
+
+bool mxl_source_data::initialize_video(std::string& flow_descriptor) 
+{
+    SimpleJsonParser parser(flow_descriptor);
     // Parse video information
     width = static_cast<uint32_t>(parser.getNumber("frame_width"));
     height = static_cast<uint32_t>(parser.getNumber("frame_height"));
@@ -176,11 +202,18 @@ bool mxl_source_data::initialize_mxl()
         blog(LOG_ERROR, "MXL Source: Failed to allocate frame buffer");
         return false;
     }
+
+    // Disable audio on video flows
+    obs_source_set_audio_active(source, false);
     
-    // Start capture thread
-    thread_active = true;
-    capture_thread = std::thread(&mxl_source_data::capture_loop, this);
-    
+    return true;
+}
+
+bool mxl_source_data::initialize_audio(std::string& flow_descriptor) 
+{
+    obs_source_set_audio_active(source, true);
+    obs_source_output_video(source, nullptr);
+
     return true;
 }
 
@@ -193,7 +226,7 @@ void mxl_source_data::cleanup_mxl()
             capture_thread.join();
         }
     }
-    
+     
     // Release MXL resources
     if (flow_reader) {
         mxlReleaseFlowReader(mxl_instance, flow_reader);
@@ -206,7 +239,85 @@ void mxl_source_data::cleanup_mxl()
     }
 }
 
-void mxl_source_data::capture_loop()
+void mxl_source_data::capture_loop_audio()
+{
+    // Huge thx for mxl-gst tools from Riedel developers
+    blog(LOG_INFO, "MXL Audio Source: Capture thread started %u", sample_amount);
+    
+    mxlRational const& rational_rate = flow_info.continuous.sampleRate;
+    sample_rate = rational_rate.numerator / rational_rate.denominator;
+    audio_buffer_size = sample_amount * sizeof(float);
+
+    mxlStatus status = mxlFlowReaderGetInfo(flow_reader, &flow_info);    
+    current_grain_index = mxlGetCurrentIndex(&rational_rate);
+    blog(LOG_INFO, "MXL Audio Source: Starting from grain index %lu", current_grain_index);
+
+    uint64_t last_logged_index = 0;
+    while (thread_active) {
+        mxlWrappedMultiBufferSlice payload;
+        status = mxlFlowReaderGetSamples(flow_reader, current_grain_index - sample_amount, sample_amount, &payload);
+        if (status == MXL_ERR_OUT_OF_RANGE_TOO_EARLY) {
+            // We are too early somehow, keep trying the same index
+            if (current_grain_index != last_logged_index) {
+                mxlFlowReaderGetInfo(flow_reader, &flow_info);
+                blog(LOG_WARNING, "MXL Audio Source: Failed to get samples at index %lu: TOO EARLY. Last published %lu", 
+                    current_grain_index,
+                    flow_info.continuous.headIndex
+                );
+                last_logged_index = current_grain_index;
+            }
+            continue;
+        }
+        else if (status == MXL_ERR_OUT_OF_RANGE_TOO_LATE) {
+            // We are too late, that's too bad. Time travel!
+            if (current_grain_index != last_logged_index) {
+                blog(LOG_WARNING, "MXL Audio Source: Failed to get samples at index %lu: TOO LATE", current_grain_index);
+                last_logged_index = current_grain_index;
+            }
+            current_grain_index = mxlGetCurrentIndex(&rational_rate);
+            continue;
+        }
+        else if (status != MXL_STATUS_OK) {
+            blog(LOG_ERROR, "MXL Audio Source: Unexpected error when reading the grain %lu with status '%d'",
+                current_grain_index,
+                static_cast<int>(status)
+            );
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            continue;
+        }
+
+        struct obs_source_audio audio = {};
+        audio.frames = sample_amount;
+        audio.speakers = SPEAKERS_MONO;
+        audio.format = AUDIO_FORMAT_FLOAT;
+        audio.samples_per_sec = sample_rate;
+        audio.timestamp = os_gettime_ns();
+
+        if (audio_buffer) {
+            bfree(audio_buffer);
+        }
+        audio_buffer = static_cast<uint8_t*>(bmalloc(audio_buffer_size));
+        audio.data[0] = audio_buffer;
+
+        uint8_t channel = selected_channel < payload.count ? selected_channel : 0;
+        auto current_write_ptr{audio_buffer};
+        for (int i = 0; i < 2; ++i){
+            auto const read_ptr{static_cast<std::byte const*>(payload.base.fragments[i].pointer) + channel * payload.stride};
+            auto const read_size{payload.base.fragments[i].size};
+            ::memcpy(current_write_ptr, read_ptr, read_size);
+            current_write_ptr += read_size;
+        }
+        obs_source_output_audio(source, &audio);
+
+        current_grain_index += sample_amount;
+        mxlSleepForNs(mxlGetNsUntilIndex(current_grain_index, &rational_rate));
+    }
+    
+    obs_source_output_audio(source, nullptr);
+    blog(LOG_INFO, "MXL Audio Source: Capture thread stopped");
+}
+
+void mxl_source_data::capture_loop_video()
 {
     blog(LOG_INFO, "MXL Source: Capture thread started");
     
@@ -214,7 +325,7 @@ void mxl_source_data::capture_loop()
     mxlStatus status = mxlFlowReaderGetInfo(flow_reader, &flow_info);
     if (status == MXL_STATUS_OK) {
         current_grain_index = flow_info.discrete.headIndex;
-        blog(LOG_INFO, "MXL Source: Starting from grain index %llu", current_grain_index);
+        blog(LOG_INFO, "MXL Source: Starting from grain index %lu", current_grain_index);
     } else {
         blog(LOG_WARNING, "MXL Source: Failed to get initial flow info, starting from 0");
         current_grain_index = 0;
@@ -230,7 +341,7 @@ void mxl_source_data::capture_loop()
                                       &grain_info, &payload);
         
         if (status == MXL_STATUS_OK && payload) {
-            if (process_grain(grain_info, payload)) {
+            if (process_grain_video(grain_info, payload)) {
                 // Create video frame structure for OBS
                 struct obs_source_frame frame = {};
                 
@@ -257,14 +368,14 @@ void mxl_source_data::capture_loop()
                 static uint64_t frame_count = 0;
                 frame_count++;
                 if (frame_count % 50 == 0) { // Log every 50 frames
-                    blog(LOG_INFO, "MXL Source: Processed frame %llu, grain %llu", 
+                    blog(LOG_INFO, "MXL Source: Processed frame %lu, grain %lu", 
                          frame_count, current_grain_index);
                 }
                 
                 // Signal OBS that new frame is available
                 obs_source_output_video(source, &frame);
             } else {
-                blog(LOG_WARNING, "MXL Source: Failed to process grain %llu", current_grain_index);
+                blog(LOG_WARNING, "MXL Source: Failed to process grain %lu", current_grain_index);
             }
             current_grain_index++;
         } else if (status == MXL_ERR_TIMEOUT) {
@@ -272,12 +383,12 @@ void mxl_source_data::capture_loop()
             static int timeout_count = 0;
             timeout_count++;
             if (timeout_count % 100 == 0) { // Log every 100 timeouts
-                blog(LOG_DEBUG, "MXL Source: Timeout waiting for grain %llu (count: %d)", 
+                blog(LOG_DEBUG, "MXL Source: Timeout waiting for grain %lu (count: %d)", 
                      current_grain_index, timeout_count);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         } else {
-            blog(LOG_WARNING, "MXL Source: Failed to get grain %llu (status: %d)", 
+            blog(LOG_WARNING, "MXL Source: Failed to get grain %lu (status: %d)", 
                  current_grain_index, status);
             // Don't increment grain index on error, try the same grain again
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -287,9 +398,9 @@ void mxl_source_data::capture_loop()
     blog(LOG_INFO, "MXL Source: Capture thread stopped");
 }
 
-bool mxl_source_data::process_grain(const mxlGrainInfo &grain_info, uint8_t *payload)
+bool mxl_source_data::process_grain_video(const mxlGrainInfo &grain_info, uint8_t *payload)
 {
-    if (!payload || grain_info.grainSize == 0) {
+    if (!payload || grain_info.validSlices != grain_info.totalSlices) {
         return false;
     }
     
@@ -370,7 +481,8 @@ void mxl_source_update(void *data, obs_data_t *settings)
     
     const char *domain = obs_data_get_string(settings, "domain_path");
     const char *flow_id = obs_data_get_string(settings, "flow_id");
-    
+    uint8_t selected_channel = obs_data_get_int(settings, "selected_channel"); 
+    uint32_t sample_amount = obs_data_get_int(settings, "sample_amount");   
     bool needs_restart = false;
     
     if (mxl_data->domain_path != domain) {
@@ -380,6 +492,16 @@ void mxl_source_update(void *data, obs_data_t *settings)
     
     if (mxl_data->flow_id != flow_id) {
         mxl_data->flow_id = flow_id ? flow_id : "";
+        needs_restart = true;
+    }
+
+    if (mxl_data->selected_channel != selected_channel) {
+        mxl_data->selected_channel = selected_channel;
+        needs_restart = true;
+    }
+
+    if (mxl_data->sample_amount != sample_amount) {
+        mxl_data->sample_amount = sample_amount;
         needs_restart = true;
     }
     
@@ -402,7 +524,7 @@ static bool domain_path_changed(obs_properties_t *props, obs_property_t *propert
     
     // Clear existing items
     obs_property_list_clear(flow_list);
-    
+    blog(LOG_INFO, "DOMAIN PATH: %s (%ld)", domain_path, strlen(domain_path));
     if (domain_path && strlen(domain_path) > 0) {
         // Create a temporary mxl_source_data to use the discovery methods
         mxl_source_data temp_data;
@@ -442,20 +564,29 @@ static bool domain_path_changed(obs_properties_t *props, obs_property_t *propert
 static bool refresh_flows_clicked(obs_properties_t *props, obs_property_t *property, void *data)
 {
     UNUSED_PARAMETER(property);
-    UNUSED_PARAMETER(data);
     
     // Get the current settings to access domain path
     obs_property_t *domain_prop = obs_properties_get(props, "domain_path");
-    if (domain_prop) {
-        // Create temporary settings to trigger the callback
-        obs_data_t *temp_settings = obs_data_create();
-        
-        // We need to get the current domain path value somehow
-        // For now, we'll trigger the callback which will handle empty domain gracefully
-        domain_path_changed(props, domain_prop, temp_settings);
-        obs_data_release(temp_settings);
+    struct mxl_source_data *mxl_data = (struct mxl_source_data *)data;
+    if (!mxl_data || !mxl_data->source) {
+        return false;
     }
-    
+    obs_data_t *settings = obs_source_get_settings(mxl_data->source);
+    domain_path_changed(props, domain_prop, settings);
+    return true;
+}
+
+static bool restart_flow_clicked(obs_properties_t *props, obs_property_t *property, void *data)
+{
+    struct mxl_source_data *mxl_data = (struct mxl_source_data *)data;
+    if (!mxl_data || !mxl_data->source) {
+        return false;
+    }
+    obs_data_t *settings = obs_source_get_settings(mxl_data->source);
+    if (mxl_data->domain_path.empty() || mxl_data->flow_id.empty()) {
+        return false;
+    }
+    mxl_data->initialize_mxl();
     return true;
 }
 
@@ -472,15 +603,12 @@ obs_properties_t *mxl_source_get_properties(void *data)
              MXL_PLUGIN_VERSION, MXL_BUILD_ID);
     obs_properties_add_text(props, "version_info", "Plugin Version", OBS_TEXT_INFO);
     
-    // Audio limitation notice
-    obs_properties_add_text(props, "audio_notice", "Note: Audio flows are not yet implemented", OBS_TEXT_INFO);
-    
     // Domain path input with callback
     obs_property_t *domain_prop = obs_properties_add_text(props, "domain_path", "MXL Domain Path", OBS_TEXT_DEFAULT);
     obs_property_set_modified_callback(domain_prop, domain_path_changed);
     
     // Flow selection dropdown
-    obs_property_t *flow_prop = obs_properties_add_list(props, "flow_id", "Available Video Flows", 
+    obs_property_t *flow_prop = obs_properties_add_list(props, "flow_id", "Available Flows", 
                                                        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
     
     // Add initial placeholder
@@ -488,6 +616,29 @@ obs_properties_t *mxl_source_get_properties(void *data)
     
     // Add refresh button
     obs_properties_add_button(props, "refresh_flows", "Refresh Flow List", refresh_flows_clicked);
+    
+    // For audio flows only. Channel selection
+    obs_properties_add_text(props, "audio_header", "Audio Settings. Only one channel is supported", OBS_TEXT_INFO);
+    obs_property_t *channel_prop = obs_properties_add_list(props, "selected_channel", "Selected audio channel", 
+                                                    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+    for (int i = 0; i < 16; ++i){
+        char channel_name[16];
+        snprintf(channel_name, sizeof(channel_name), "Channel %i", i + 1);
+        obs_property_list_add_int(channel_prop, channel_name, i);
+    }
+
+    // Amount of sample per batch
+    obs_property_t *samples_per_batch = obs_properties_add_int(
+        props,
+        "sample_amount",
+        "Number of audio samples per batch/buffer", 
+        1,
+        4096,
+        1
+    );
+
+    // Add restart button
+    obs_properties_add_button(props, "restart_flow_capture", "Restart flow capture", restart_flow_clicked);
     
     return props;
 }
@@ -503,6 +654,8 @@ void mxl_source_get_defaults(obs_data_t *settings)
     
     obs_data_set_default_string(settings, "domain_path", "/tmp/mxl_domain");
     obs_data_set_default_string(settings, "flow_id", "5fbec3b1-1b0f-417d-9059-8b94a47197ef");
+    obs_data_set_default_int(settings, "selected_channel", 0);
+    obs_data_set_default_int(settings, "sample_amount", 128);
 }
 
 uint32_t mxl_source_get_width(void *data)

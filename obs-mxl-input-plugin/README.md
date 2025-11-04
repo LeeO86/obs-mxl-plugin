@@ -1,16 +1,16 @@
 # OBS MXL Plugin
 
-An OBS Studio plugin that allows you to use MXL (Media Exchange Layer) flows as video sources.
+An OBS Studio plugin that allows you to use MXL (Media Exchange Layer) flows as video/audio sources.
 
 ## ⚠️ Current Limitations
 
 - **Platform Support**: Currently only supports macOS and Linux. Windows support coming soon.
-- **Media Support**: Currently supports video-only flows. Audio is not yet supported.
+- **Media Support**: Video and audio flows. Audio is limited to one channel selection.
 - **Resolution Testing**: Only tested with 1920x1080 video resolutions.
 
 ## Overview
 
-This plugin enables OBS Studio to consume video streams from MXL flows, allowing for low-latency, high-performance video sharing between applications using shared memory.
+This plugin enables OBS Studio to consume video/audio streams from MXL flows, allowing for low-latency, high-performance video/audio sharing between applications using shared memory.
 
 ![MXL Flow Source in OBS Studio](assets/screenshot_mxl_input.png)
 
@@ -21,6 +21,7 @@ This plugin enables OBS Studio to consume video streams from MXL flows, allowing
 - Configurable domain path and flow ID
 - Automatic frame rate detection
 - Thread-safe frame processing
+- Basic audio support (limited to one channel selection. Will be fixed soon)
 
 ## Prerequisites
 
@@ -111,6 +112,7 @@ The scripts also handle platform-specific library path configuration automatical
    # Create a test video source
    ./mxl-gst-videotestsrc -d /tmp/mxl_domain -f flow_config.json
    ```
+You can find MXL Tools with audio support here: [mxl-tools with audio](https://github.com/dmf-mxl/mxl/pull/208)
 
 
 ## Supported Video Formats
@@ -120,6 +122,10 @@ The scripts also handle platform-specific library path configuration automatical
 - **video/v210**: 10-bit YUV 4:2:2
 - **video/yuv420p**: I420 format
 - **video/nv12**: NV12 format
+
+## Supported Audio Formats
+
+- **audio/float32**
 
 ## Troubleshooting
 

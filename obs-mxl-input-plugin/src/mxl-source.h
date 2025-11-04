@@ -8,6 +8,7 @@
 #include <mxl/mxl.h>
 #include <mxl/flow.h>
 #include <mxl/flowinfo.h>
+#include <mxl/time.h>
 #include <string>
 #include <thread>
 #include <atomic>
@@ -24,6 +25,7 @@ struct mxl_flow_info {
 };
 
 struct mxl_source_data {
+    bool is_video = false;
     // OBS source
     obs_source_t *source;
     
@@ -32,9 +34,11 @@ struct mxl_source_data {
     mxlFlowReader flow_reader;
     mxlFlowInfo flow_info;
     
-    // Configuration
+    // Configuration: common
     std::string domain_path;
     std::string flow_id;
+    // Configuration: audio
+    uint8_t selected_channel;
     
     // Threading
     std::thread capture_thread;
@@ -47,6 +51,14 @@ struct mxl_source_data {
     uint32_t width;
     uint32_t height;
     enum video_format format;
+
+    // Audio data
+    uint8_t *audio_buffer;
+    size_t audio_buffer_size;
+    uint8_t channel_amount;
+    uint32_t sample_rate;
+    // amount of samples per buffer
+    uint32_t sample_amount;
     
     // Timing
     uint64_t current_grain_index;
@@ -58,9 +70,12 @@ struct mxl_source_data {
     
     // Methods
     bool initialize_mxl();
+    bool initialize_video(std::string& flow_descriptor);
+    bool initialize_audio(std::string& flow_descriptor);
     void cleanup_mxl();
-    void capture_loop();
-    bool process_grain(const mxlGrainInfo &grain_info, uint8_t *payload);
+    void capture_loop_video();
+    void capture_loop_audio();
+    bool process_grain_video(const mxlGrainInfo &grain_info, uint8_t *payload);
     enum video_format get_obs_format_from_mxl(const std::string &media_type);
     size_t calculate_frame_size(enum video_format format, uint32_t width, uint32_t height);
     void convert_v210_to_rgba(uint8_t *v210_data, size_t v210_size, 

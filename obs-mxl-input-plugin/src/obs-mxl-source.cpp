@@ -18,7 +18,7 @@ bool obs_module_load(void)
     
     mxl_source_info.id = "mxl_source";
     mxl_source_info.type = OBS_SOURCE_TYPE_INPUT;
-    mxl_source_info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_ASYNC;
+    mxl_source_info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_ASYNC;
     
     mxl_source_info.get_name = mxl_source_get_name;
     mxl_source_info.create = mxl_source_create;

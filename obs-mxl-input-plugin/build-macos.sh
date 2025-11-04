@@ -87,6 +87,7 @@ if [[ "$PLATFORM" == "Linux" ]]; then
     echo "   sudo mount -t tmpfs -o size=1G tmpfs /tmp/mxl_domain"
 else
     echo "   mkdir -p /tmp/mxl_domain"
+    echo "   sudo mount_tmpfs -s 1g /tmp/mxl_domain"
 fi
 echo "2. Start OBS Studio"
 echo "3. Add a new source -> MXL Flow Source"

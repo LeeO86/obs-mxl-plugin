@@ -10,11 +10,10 @@ A collection of OBS Studio plugins that enable integration with [MXL (Media Exch
 
 - **Platform Support**: Currently only supports macOS and Linux. Windows support is under development.
 - **Resolution Requirement**: Output plugin currently only works with **1920x1080** resolution.
-- **Video-Only Flow Support**: Plugins currently support video-only flows. Audio support is under development.
 
 ## Future Development and Roadmap
 - Combine input & output plugins into one
-- Add audio flow support
+- Add audio flow support for output
 - Support for any resolution & framerate
 - Add Windows support
 
@@ -24,7 +23,7 @@ A collection of OBS Studio plugins that enable integration with [MXL (Media Exch
 Allows OBS Studio to consume video streams from MXL flows as sources.
 
 **Key Features:**
-- Real-time video capture from MXL flows
+- Real-time video/audio capture from MXL flows
 - Support for multiple video formats (RGBA, V210, I420, NV12)
 - Configurable domain path and flow ID
 - Automatic frame rate detection
