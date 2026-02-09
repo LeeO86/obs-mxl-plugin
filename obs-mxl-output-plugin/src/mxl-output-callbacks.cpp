@@ -5,6 +5,30 @@
 #include <iomanip>
 #include <inttypes.h>
 
+namespace {
+    uint32_t speaker_layout_to_channels(enum speaker_layout layout)
+    {
+        switch (layout) {
+        case SPEAKERS_MONO:
+            return 1;
+        case SPEAKERS_STEREO:
+            return 2;
+        case SPEAKERS_2POINT1:
+            return 3;
+        case SPEAKERS_4POINT0:
+            return 4;
+        case SPEAKERS_4POINT1:
+            return 5;
+        case SPEAKERS_5POINT1:
+            return 6;
+        case SPEAKERS_7POINT1:
+            return 8;
+        default:
+            return 2;
+        }
+    }
+}
+
 // Forward declaration for callback functions
 extern "C" {
     const char *mxl_output_get_name(void *unused);
@@ -41,12 +65,15 @@ void *mxl_output_create(obs_data_t *settings, obs_output_t *output)
     data->domain_path = obs_data_get_string(settings, "domain_path");
     data->video_flow_id = obs_data_get_string(settings, "video_flow_id");
     data->video_enabled = obs_data_get_bool(settings, "video_enabled");
+    data->audio_flow_id = obs_data_get_string(settings, "audio_flow_id");
+    data->audio_enabled = obs_data_get_bool(settings, "audio_enabled");
     
     // Get video info from OBS
     obs_video_info ovi;
     if (obs_get_video_info(&ovi)) {
-        data->video_width = ovi.base_width;
-        data->video_height = ovi.base_height;
+        // Use output resolution because raw frames are delivered at output size
+        data->video_width = ovi.output_width;
+        data->video_height = ovi.output_height;
         data->video_fps_num = ovi.fps_num;
         data->video_fps_den = ovi.fps_den;
         data->video_format = ovi.output_format;
@@ -58,10 +85,18 @@ void *mxl_output_create(obs_data_t *settings, obs_output_t *output)
         }
     }
 
+    // Get audio info from OBS
+    obs_audio_info aoi;
+    if (obs_get_audio_info(&aoi)) {
+        data->audio_sample_rate = aoi.samples_per_sec;
+        data->audio_channel_count = speaker_layout_to_channels(aoi.speakers);
+    }
+
     
-    blog(LOG_INFO, "MXL Output: Created output instance - Video: %dx%d@%.2ffps",
+    blog(LOG_INFO, "MXL Output: Created output instance - Video: %dx%d@%.2ffps, Audio: %u Hz, %u ch",
          data->video_width, data->video_height,
-         (double)data->video_fps_num / data->video_fps_den);
+         (double)data->video_fps_num / data->video_fps_den,
+         data->audio_sample_rate, data->audio_channel_count);
     
     return data;
 }
@@ -113,6 +148,10 @@ bool mxl_output_start(void *data)
     output_data->start_timestamp = output_data->get_timestamp_ns();
     output_data->video_grain_index = 0;
     output_data->video_grain_index = 0;
+    output_data->last_grain_index_valid = false;
+    output_data->last_audio_index_valid = false;
+    output_data->audio_has_time_offset = false;
+    output_data->has_time_offset = false;
     
     try {
         output_data->output_thread = std::thread(&mxl_output_data::output_loop, output_data);
@@ -160,7 +199,7 @@ void mxl_output_raw_video(void *data, struct video_data *frame)
     frame_count++;
     
     if (frame_count % 300 == 1) { // Log every 300th frame (every 10 seconds at 30fps)
-        blog(LOG_INFO, "MXL Output: Received video frame %" PRIu64 " (timestamp: %" PRIu64 ")", 
+        blog(LOG_DEBUG, "MXL Output: Received video frame %" PRIu64 " (timestamp: %" PRIu64 ")", 
              frame_count, frame->timestamp);
     }
     
@@ -198,7 +237,7 @@ void mxl_output_raw_video(void *data, struct video_data *frame)
         output_data->video_queue.push(std::move(video_frame));
         
         if (frame_count % 300 == 1) {
-            blog(LOG_INFO, "MXL Output: Video queue size: %zu", output_data->video_queue.size());
+            blog(LOG_DEBUG, "MXL Output: Video queue size: %zu", output_data->video_queue.size());
         }
     }
     
@@ -235,17 +274,21 @@ int mxl_output_get_dropped_frames(void *data)
 
 void mxl_output_raw_audio2(void *data, size_t idx, struct audio_data *frames)
 {
-    UNUSED_PARAMETER(data);
     UNUSED_PARAMETER(idx);
-    UNUSED_PARAMETER(frames);
-    // Audio not supported - do nothing
+    mxl_output_data *output_data = static_cast<mxl_output_data*>(data);
+    if (!output_data || !output_data->output_active || !output_data->audio_enabled || !frames) {
+        return;
+    }
+    output_data->write_audio_samples(frames);
 }
 
 void mxl_output_raw_audio(void *data, struct audio_data *frames)
 {
-    UNUSED_PARAMETER(data);
-    UNUSED_PARAMETER(frames);
-    // Audio not supported - do nothing
+    mxl_output_data *output_data = static_cast<mxl_output_data*>(data);
+    if (!output_data || !output_data->output_active || !output_data->audio_enabled || !frames) {
+        return;
+    }
+    output_data->write_audio_samples(frames);
 }
 
 void mxl_output_update(void *data, obs_data_t *settings)
@@ -259,6 +302,8 @@ void mxl_output_update(void *data, obs_data_t *settings)
     config->OutputEnabled = obs_data_get_bool(settings, "output_enabled");
     config->VideoEnabled = obs_data_get_bool(settings, "video_enabled");
     config->VideoFlowId = obs_data_get_string(settings, "video_flow_id");
+    config->AudioEnabled = obs_data_get_bool(settings, "audio_enabled");
+    config->AudioFlowId = obs_data_get_string(settings, "audio_flow_id");
     
     // Save to file
     config->Save();
@@ -268,6 +313,8 @@ void mxl_output_update(void *data, obs_data_t *settings)
         output_data->domain_path = config->DomainPath;
         output_data->video_flow_id = config->VideoFlowId;
         output_data->video_enabled = config->VideoEnabled;
+        output_data->audio_flow_id = config->AudioFlowId;
+        output_data->audio_enabled = config->AudioEnabled;
     }
     
     // In a full implementation, you might want to:

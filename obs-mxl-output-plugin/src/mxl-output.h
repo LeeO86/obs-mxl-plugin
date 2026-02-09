@@ -44,11 +44,16 @@ struct mxl_output_data {
     // MXL components
     mxlInstance mxl_instance;
     mxlFlowWriter video_flow_writer;
+    mxlFlowConfigInfo flow_config;
+    mxlFlowWriter audio_flow_writer;
+    mxlFlowConfigInfo audio_flow_config;
     
     // Configuration
     std::string domain_path;
     std::string video_flow_id;
+    std::string audio_flow_id;
     bool video_enabled;
+    bool audio_enabled;
     
     // Video properties
     uint32_t video_width;
@@ -57,6 +62,8 @@ struct mxl_output_data {
     uint32_t video_fps_den;
     enum video_format video_format;
     std::string video_media_type;
+    uint32_t audio_sample_rate;
+    uint32_t audio_channel_count;
 
     
     // Threading and synchronization
@@ -71,6 +78,15 @@ struct mxl_output_data {
     
     // Grain indexing
     std::atomic<uint64_t> video_grain_index;
+    uint64_t last_grain_index;
+    bool last_grain_index_valid;
+    int64_t mxl_time_offset_ns;
+    bool has_time_offset;
+    uint64_t last_audio_index_end;
+    bool last_audio_index_valid;
+    int64_t audio_time_offset_ns;
+    bool audio_has_time_offset;
+    std::mutex audio_mutex;
     
     // Timing
     uint64_t start_timestamp;
@@ -84,8 +100,12 @@ struct mxl_output_data {
     bool initialize_mxl();
     void cleanup_mxl();
     bool create_video_flow();
+    bool create_audio_flow();
     void output_loop();
     bool process_video_frame(std::unique_ptr<video_frame_data> frame);
+    bool write_invalid_grain(uint64_t grain_index);
+    bool write_audio_samples(struct audio_data *frames);
+    bool write_silence_samples(uint64_t start_index, uint64_t count);
     
     // Format conversion helpers
     std::string get_mxl_video_media_type(enum video_format format);
@@ -99,6 +119,7 @@ struct mxl_output_data {
     
     // Flow descriptor creation
     bool create_video_flow_descriptor();
+    bool create_audio_flow_descriptor();
     std::string generate_flow_descriptor_json(bool is_video);
     
     // Utility methods

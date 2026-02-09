@@ -38,7 +38,45 @@ Enables OBS Studio to output video streams as MXL flows for consumption by other
 ## Development
 
 ### Building from Source
-Each plugin has its own build system. See individual plugin READMEs for detailed build instructions.
+Each plugin has its own build system. You can still build them individually (see the plugin READMEs), or use the unified build scripts at the repo root.
+
+#### MXL Submodule
+This repo pins the MXL SDK as a submodule at `third_party/mxl`, so the exact SDK commit is tracked with this repo.
+Current pinned commit: `96a535ee31e96c0f66ae3b5565a366127df08a3c`.
+
+Initialize or update submodules:
+```bash
+git submodule update --init --recursive
+```
+
+To update the pinned MXL commit:
+```bash
+cd third_party/mxl
+git fetch origin
+git checkout <new-commit>
+cd ../..
+git add third_party/mxl
+```
+
+#### Unified Build (macOS/Linux)
+These scripts build the MXL SDK into a repo-local prefix and then build both plugins:
+
+```bash
+./build-macos.sh   # macOS
+./build-linux.sh   # Linux
+```
+
+Defaults and environment variables:
+- `MXL_SDK_PREFIX`: install prefix for the MXL SDK (default: `./.mxl-sdk/usr/local`)
+- `VCPKG_ROOT`: path to vcpkg (default: `~/vcpkg`, required by MXL presets)
+- `OBS_SOURCE_DIR`: OBS source path (macOS only)
+- `MXL_PRESET`: override MXL CMake preset (default: `Darwin-Clang-Release` or `Linux-GCC-Release`)
+
+You can also drive the scripts via CMake:
+```bash
+cmake -S . -B build
+cmake --build build --target build-all
+```
 
 ### Contributing
 1. Fork the repository

@@ -48,6 +48,15 @@ check_obs_libraries() {
 
 # Check for MXL SDK
 check_mxl_sdk() {
+    if [ -n "$MXL_SDK_PREFIX" ]; then
+        if [ -f "$MXL_SDK_PREFIX/lib/cmake/mxl/mxlConfig.cmake" ] || \
+           [ -f "$MXL_SDK_PREFIX/include/mxl/mxl.h" ] || \
+           [ -f "$MXL_SDK_PREFIX/include/mxl.h" ]; then
+            echo "Found MXL SDK at: $MXL_SDK_PREFIX"
+            return 0
+        fi
+    fi
+
     local mxl_paths=(
 	"$HOME/mxl-sdk"
         "/usr"

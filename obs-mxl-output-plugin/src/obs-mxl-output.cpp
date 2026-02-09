@@ -43,6 +43,8 @@ namespace {
                 obs_data_set_string(settings, "domain_path", global_config->DomainPath.c_str());
                 obs_data_set_string(settings, "video_flow_id", global_config->VideoFlowId.c_str());
                 obs_data_set_bool(settings, "video_enabled", global_config->VideoEnabled);
+                obs_data_set_string(settings, "audio_flow_id", global_config->AudioFlowId.c_str());
+                obs_data_set_bool(settings, "audio_enabled", global_config->AudioEnabled);
                 
                 global_mxl_output = obs_output_create("mxl_raw_output", "MXL Output", settings, nullptr);
                 
@@ -105,6 +107,8 @@ namespace {
         blog(LOG_INFO, "Domain Path: %s", global_config->DomainPath.c_str());
         blog(LOG_INFO, "Video Enabled: %s", global_config->VideoEnabled ? "Yes" : "No");
         blog(LOG_INFO, "Video Flow ID: %s", global_config->VideoFlowId.c_str());
+        blog(LOG_INFO, "Audio Enabled: %s", global_config->AudioEnabled ? "Yes" : "No");
+        blog(LOG_INFO, "Audio Flow ID: %s", global_config->AudioFlowId.c_str());
         
         if (global_mxl_output) {
             blog(LOG_INFO, "Output Status: %s", obs_output_active(global_mxl_output) ? "ACTIVE" : "STOPPED");
@@ -129,7 +133,9 @@ void mxl_output_settings_callback(void *data)
     // Store original settings to detect changes
     bool original_output_enabled = config->OutputEnabled;
     bool original_video_enabled = config->VideoEnabled;
+    bool original_audio_enabled = config->AudioEnabled;
     std::string original_domain_path = config->DomainPath;
+    std::string original_audio_flow_id = config->AudioFlowId;
     
     // Prepare settings structure
     MXLNativeDialog::Settings settings;
@@ -137,24 +143,32 @@ void mxl_output_settings_callback(void *data)
     settings.output_enabled = config->OutputEnabled;
     settings.video_enabled = config->VideoEnabled;
     settings.video_flow_id = config->VideoFlowId;
+    settings.audio_enabled = config->AudioEnabled;
+    settings.audio_flow_id = config->AudioFlowId;
     
     // Auto-populate UUIDs if empty and streams are enabled
     if (settings.video_enabled && settings.video_flow_id.empty()) {
         settings.video_flow_id = MXLNativeDialog::GenerateUUID();
     }
+    if (settings.audio_enabled && settings.audio_flow_id.empty()) {
+        settings.audio_flow_id = MXLNativeDialog::GenerateUUID();
+    }
     
     // Show the native dialog
     if (MXLNativeDialog::ShowSettingsDialog(settings)) {
         // User clicked OK - apply the settings
-        blog(LOG_INFO, "MXL Output: Settings updated - Output: %s, Video: %s", 
+        blog(LOG_INFO, "MXL Output: Settings updated - Output: %s, Video: %s, Audio: %s", 
              settings.output_enabled ? "enabled" : "disabled",
-             settings.video_enabled ? "enabled" : "disabled");
+             settings.video_enabled ? "enabled" : "disabled",
+             settings.audio_enabled ? "enabled" : "disabled");
         
         // Update configuration
         config->DomainPath = settings.domain_path;
         config->OutputEnabled = settings.output_enabled;
         config->VideoEnabled = settings.video_enabled;
         config->VideoFlowId = settings.video_flow_id;
+        config->AudioEnabled = settings.audio_enabled;
+        config->AudioFlowId = settings.audio_flow_id;
         
         // Save to file
         config->Save();
@@ -164,7 +178,10 @@ void mxl_output_settings_callback(void *data)
         if (global_mxl_output && obs_output_active(global_mxl_output)) {
             // Output is currently running - check if stream settings changed
             if (original_video_enabled != settings.video_enabled ||
-                original_domain_path != settings.domain_path) {
+                original_audio_enabled != settings.audio_enabled ||
+                original_output_enabled != settings.output_enabled ||
+                original_domain_path != settings.domain_path ||
+                original_audio_flow_id != settings.audio_flow_id) {
                 needs_restart = true;
                 blog(LOG_INFO, "MXL Output: Restarting output due to configuration changes");
             }

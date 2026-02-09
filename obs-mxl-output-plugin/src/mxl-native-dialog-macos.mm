@@ -11,9 +11,13 @@
     NSTextField *videoLabel;
     NSTextField *videoField;
     NSButton *videoCheck;
+    NSTextField *audioLabel;
+    NSTextField *audioField;
+    NSButton *audioCheck;
 }
 - (void)setupControls:(MXLNativeDialog::Settings&)settings;
 - (void)videoCheckChanged:(id)sender;
+- (void)audioCheckChanged:(id)sender;
 - (void)getSettings:(MXLNativeDialog::Settings&)settings;
 @end
 
@@ -78,9 +82,18 @@
     [videoCheck setTarget:self];
     [videoCheck setAction:@selector(videoCheckChanged:)];
     [self addSubview:videoCheck];
+
+    // Audio Enabled
+    audioCheck = [[NSButton alloc] initWithFrame:NSMakeRect(10, 110, 200, 20)];
+    [audioCheck setButtonType:NSButtonTypeSwitch];
+    [audioCheck setTitle:@"Enable Audio Stream"];
+    [audioCheck setState:settings.audio_enabled ? NSControlStateValueOn : NSControlStateValueOff];
+    [audioCheck setTarget:self];
+    [audioCheck setAction:@selector(audioCheckChanged:)];
+    [self addSubview:audioCheck];
     
     // Video Flow ID (conditionally visible, wider field)
-    videoLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 100, 140, 20)];
+    videoLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 80, 140, 20)];
     [videoLabel setStringValue:@"Video Flow ID:"];
     [videoLabel setBezeled:NO];
     [videoLabel setDrawsBackground:NO];
@@ -89,10 +102,25 @@
     [videoLabel setHidden:!settings.video_enabled];
     [self addSubview:videoLabel];
     
-    videoField = [[NSTextField alloc] initWithFrame:NSMakeRect(160, 100, 340, 20)];
+    videoField = [[NSTextField alloc] initWithFrame:NSMakeRect(160, 80, 340, 20)];
     [videoField setStringValue:[NSString stringWithUTF8String:settings.video_flow_id.c_str()]];
     [videoField setHidden:!settings.video_enabled];
     [self addSubview:videoField];
+
+    // Audio Flow ID (conditionally visible)
+    audioLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 50, 140, 20)];
+    [audioLabel setStringValue:@"Audio Flow ID:"];
+    [audioLabel setBezeled:NO];
+    [audioLabel setDrawsBackground:NO];
+    [audioLabel setEditable:NO];
+    [audioLabel setSelectable:NO];
+    [audioLabel setHidden:!settings.audio_enabled];
+    [self addSubview:audioLabel];
+    
+    audioField = [[NSTextField alloc] initWithFrame:NSMakeRect(160, 50, 340, 20)];
+    [audioField setStringValue:[NSString stringWithUTF8String:settings.audio_flow_id.c_str()]];
+    [audioField setHidden:!settings.audio_enabled];
+    [self addSubview:audioField];
 }
 
 - (void)videoCheckChanged:(id)sender {
@@ -101,17 +129,30 @@
     [videoField setHidden:!enabled];
 }
 
+- (void)audioCheckChanged:(id)sender {
+    BOOL enabled = [audioCheck state] == NSControlStateValueOn;
+    [audioLabel setHidden:!enabled];
+    [audioField setHidden:!enabled];
+}
+
 
 - (void)getSettings:(MXLNativeDialog::Settings&)settings {
     settings.domain_path = [[domainField stringValue] UTF8String];
     settings.output_enabled = [outputCheck state] == NSControlStateValueOn;
     settings.video_enabled = [videoCheck state] == NSControlStateValueOn;
+    settings.audio_enabled = [audioCheck state] == NSControlStateValueOn;
     
     // Only get flow ID if video stream is enabled
     if (settings.video_enabled) {
         settings.video_flow_id = [[videoField stringValue] UTF8String];
         if (settings.video_flow_id.empty()) {
             settings.video_flow_id = MXLNativeDialog::GenerateUUID();
+        }
+    }
+    if (settings.audio_enabled) {
+        settings.audio_flow_id = [[audioField stringValue] UTF8String];
+        if (settings.audio_flow_id.empty()) {
+            settings.audio_flow_id = MXLNativeDialog::GenerateUUID();
         }
     }
 }
@@ -125,6 +166,9 @@ bool MXLNativeDialog::ShowSettingsDialog_macOS(Settings& settings) {
         if (settings.video_flow_id.empty()) {
             settings.video_flow_id = GenerateUUID();
         }
+        if (settings.audio_flow_id.empty()) {
+            settings.audio_flow_id = GenerateUUID();
+        }
         
         NSAlert *alert = [[NSAlert alloc] init];
         [alert setMessageText:@"MXL Output Settings"];
@@ -133,7 +177,7 @@ bool MXLNativeDialog::ShowSettingsDialog_macOS(Settings& settings) {
         [alert addButtonWithTitle:@"Cancel"];
         
         // Create custom view with form controls (reduced height since audio controls removed)
-        MXLDialogView *accessoryView = [[MXLDialogView alloc] initWithFrame:NSMakeRect(0, 0, 520, 290)];
+        MXLDialogView *accessoryView = [[MXLDialogView alloc] initWithFrame:NSMakeRect(0, 0, 520, 300)];
         [accessoryView setupControls:settings];
         
         [alert setAccessoryView:accessoryView];

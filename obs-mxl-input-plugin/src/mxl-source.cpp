@@ -9,6 +9,9 @@
 #include <sstream>
 #include <sys/file.h>
 #include <unistd.h>
+#include <inttypes.h>
+#include <algorithm>
+#include <cstring>
 
 // Version and build information
 #define MXL_PLUGIN_VERSION "0.0.1-alpha"
@@ -128,7 +131,7 @@ bool mxl_source_data::initialize_mxl()
     }
     
     // Data flows is not supported
-    if (flow_info.common.format == MXL_DATA_FORMAT_DATA) {
+    if (flow_info.config.common.format == MXL_DATA_FORMAT_DATA) {
         blog(LOG_ERROR, "MXL Source: Data flows is not supported");
         return false;
     }
@@ -146,7 +149,7 @@ bool mxl_source_data::initialize_mxl()
     descriptor_file.close();
     
     // Initialize audio
-    if (flow_info.common.format == MXL_DATA_FORMAT_AUDIO) {
+    if (flow_info.config.common.format == MXL_DATA_FORMAT_AUDIO) {
         if (! initialize_audio(flow_descriptor)) {
             return false;
         }
@@ -157,7 +160,7 @@ bool mxl_source_data::initialize_mxl()
     }
 
     // Initialize video
-    if (flow_info.common.format == MXL_DATA_FORMAT_VIDEO) {
+    if (flow_info.config.common.format == MXL_DATA_FORMAT_VIDEO) {
         if (! initialize_video(flow_descriptor)) {
             return false;
         }
@@ -183,9 +186,9 @@ bool mxl_source_data::initialize_video(std::string& flow_descriptor)
     }
     
     // Calculate frame interval from grain rate
-    if (flow_info.discrete.grainRate.numerator > 0) {
-        frame_interval_ns = (1000000000ULL * flow_info.discrete.grainRate.denominator) / 
-                           flow_info.discrete.grainRate.numerator;
+    if (flow_info.config.common.grainRate.numerator > 0) {
+        frame_interval_ns = (1000000000ULL * flow_info.config.common.grainRate.denominator) / 
+                           flow_info.config.common.grainRate.numerator;
     }
     
     // Determine video format based on media type
@@ -193,7 +196,7 @@ bool mxl_source_data::initialize_video(std::string& flow_descriptor)
     
     blog(LOG_INFO, "MXL Source: Initialized video flow %dx%d, format: %s, fps: %.2f", 
          width, height, media_type.c_str(), 
-         (double)flow_info.discrete.grainRate.numerator / flow_info.discrete.grainRate.denominator);
+         (double)flow_info.config.common.grainRate.numerator / flow_info.config.common.grainRate.denominator);
     
     // Calculate proper frame buffer size based on format
     frame_size = calculate_frame_size(format, width, height);
@@ -239,73 +242,170 @@ void mxl_source_data::cleanup_mxl()
     }
 }
 
+static uint64_t compute_read_delay_index(const mxlRational &rate, uint64_t read_delay_ns)
+{
+    if (rate.numerator <= 0 || rate.denominator <= 0) {
+        return 0;
+    }
+    __uint128_t delay = static_cast<__uint128_t>(read_delay_ns) * static_cast<__uint128_t>(rate.numerator);
+    uint64_t denom = static_cast<uint64_t>(rate.denominator) * 1000000000ULL;
+    return static_cast<uint64_t>(delay / denom);
+}
+
+static enum speaker_layout speaker_layout_from_channels(uint32_t channels)
+{
+    switch (channels) {
+    case 1:
+        return SPEAKERS_MONO;
+    case 2:
+        return SPEAKERS_STEREO;
+    case 3:
+        return SPEAKERS_2POINT1;
+    case 4:
+        return SPEAKERS_4POINT0;
+    case 5:
+        return SPEAKERS_4POINT1;
+    case 6:
+        return SPEAKERS_5POINT1;
+    case 8:
+        return SPEAKERS_7POINT1;
+    default:
+        return SPEAKERS_STEREO;
+    }
+}
+
 void mxl_source_data::capture_loop_audio()
 {
     // Huge thx for mxl-gst tools from Riedel developers
     blog(LOG_INFO, "MXL Audio Source: Capture thread started %u", sample_amount);
     
-    mxlRational const& rational_rate = flow_info.continuous.sampleRate;
+    mxlRational const& rational_rate = flow_info.config.common.grainRate;
     sample_rate = rational_rate.numerator / rational_rate.denominator;
-    audio_buffer_size = sample_amount * sizeof(float);
+    const uint64_t read_delay_ns = 40'000'000ULL;
+    uint64_t read_delay_samples = compute_read_delay_index(rational_rate, read_delay_ns);
+    read_delay_samples = std::max<uint64_t>(read_delay_samples, sample_amount);
+    uint32_t output_channels = 2;
 
-    mxlStatus status = mxlFlowReaderGetInfo(flow_reader, &flow_info);    
-    current_grain_index = mxlGetCurrentIndex(&rational_rate);
-    blog(LOG_INFO, "MXL Audio Source: Starting from grain index %lu", current_grain_index);
+    mxlStatus status = mxlFlowReaderGetInfo(flow_reader, &flow_info);
+    mxlFlowRuntimeInfo runtime_info = {};
+    if (mxlFlowReaderGetRuntimeInfo(flow_reader, &runtime_info) == MXL_STATUS_OK) {
+        current_grain_index = (runtime_info.headIndex > read_delay_samples)
+            ? (runtime_info.headIndex - read_delay_samples)
+            : runtime_info.headIndex;
+    } else {
+        current_grain_index = mxlGetCurrentIndex(&rational_rate);
+    }
+    blog(LOG_INFO, "MXL Audio Source: Starting from grain index %" PRIu64, current_grain_index);
 
     uint64_t last_logged_index = 0;
     while (thread_active) {
         mxlWrappedMultiBufferSlice payload;
-        status = mxlFlowReaderGetSamples(flow_reader, current_grain_index - sample_amount, sample_amount, &payload);
+        status = mxlFlowReaderGetSamples(
+            flow_reader,
+            current_grain_index,
+            sample_amount,
+            mxlGetNsUntilIndex(current_grain_index + sample_amount, &rational_rate),
+            &payload);
         if (status == MXL_ERR_OUT_OF_RANGE_TOO_EARLY) {
             // We are too early somehow, keep trying the same index
             if (current_grain_index != last_logged_index) {
-                mxlFlowReaderGetInfo(flow_reader, &flow_info);
-                blog(LOG_WARNING, "MXL Audio Source: Failed to get samples at index %lu: TOO EARLY. Last published %lu", 
+                mxlFlowReaderGetRuntimeInfo(flow_reader, &runtime_info);
+                blog(LOG_WARNING, "MXL Audio Source: Failed to get samples at index %" PRIu64 ": TOO EARLY. Last published %" PRIu64,
                     current_grain_index,
-                    flow_info.continuous.headIndex
+                    runtime_info.headIndex
                 );
                 last_logged_index = current_grain_index;
             }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
         else if (status == MXL_ERR_OUT_OF_RANGE_TOO_LATE) {
             // We are too late, that's too bad. Time travel!
             if (current_grain_index != last_logged_index) {
-                blog(LOG_WARNING, "MXL Audio Source: Failed to get samples at index %lu: TOO LATE", current_grain_index);
+                blog(LOG_WARNING, "MXL Audio Source: Failed to get samples at index %" PRIu64 ": TOO LATE", current_grain_index);
                 last_logged_index = current_grain_index;
             }
-            current_grain_index = mxlGetCurrentIndex(&rational_rate);
+            if (mxlFlowReaderGetRuntimeInfo(flow_reader, &runtime_info) == MXL_STATUS_OK) {
+                current_grain_index = (runtime_info.headIndex > read_delay_samples)
+                    ? (runtime_info.headIndex - read_delay_samples)
+                    : runtime_info.headIndex;
+            } else {
+                current_grain_index = mxlGetCurrentIndex(&rational_rate);
+            }
+            continue;
+        }
+        else if (status == MXL_ERR_FLOW_INVALID) {
+            blog(LOG_WARNING, "MXL Audio Source: Flow invalid, attempting to reopen reader");
+            mxlReleaseFlowReader(mxl_instance, flow_reader);
+            flow_reader = nullptr;
+            if (mxlCreateFlowReader(mxl_instance, flow_id.c_str(), "", &flow_reader) == MXL_STATUS_OK) {
+                mxlFlowReaderGetInfo(flow_reader, &flow_info);
+                continue;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
             continue;
         }
         else if (status != MXL_STATUS_OK) {
-            blog(LOG_ERROR, "MXL Audio Source: Unexpected error when reading the grain %lu with status '%d'",
+            blog(LOG_ERROR, "MXL Audio Source: Unexpected error when reading the grain %" PRIu64 " with status '%d'",
                 current_grain_index,
                 static_cast<int>(status)
             );
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
             continue;
         }
 
         struct obs_source_audio audio = {};
+        // Use payload channel count when available, cap to OBS max channels (8)
+        output_channels = static_cast<uint32_t>(std::min<size_t>(payload.count, 8));
+        if (output_channels == 0) {
+            output_channels = 2;
+        }
+        if (output_channels == 7) {
+            output_channels = 8;
+        }
+        const size_t per_channel_bytes = sample_amount * sizeof(float);
+        audio_buffer_size = per_channel_bytes * output_channels;
+
         audio.frames = sample_amount;
-        audio.speakers = SPEAKERS_MONO;
-        audio.format = AUDIO_FORMAT_FLOAT;
+        audio.speakers = speaker_layout_from_channels(output_channels);
+        audio.format = AUDIO_FORMAT_FLOAT_PLANAR;
         audio.samples_per_sec = sample_rate;
-        audio.timestamp = os_gettime_ns();
+        audio.timestamp = mxlIndexToTimestamp(&rational_rate, current_grain_index);
 
         if (audio_buffer) {
             bfree(audio_buffer);
         }
         audio_buffer = static_cast<uint8_t*>(bmalloc(audio_buffer_size));
-        audio.data[0] = audio_buffer;
+        std::memset(audio_buffer, 0, audio_buffer_size);
+        for (uint32_t ch = 0; ch < output_channels; ++ch) {
+            audio.data[ch] = audio_buffer + (ch * per_channel_bytes);
+        }
 
-        uint8_t channel = selected_channel < payload.count ? selected_channel : 0;
-        auto current_write_ptr{audio_buffer};
-        for (int i = 0; i < 2; ++i){
-            auto const read_ptr{static_cast<std::byte const*>(payload.base.fragments[i].pointer) + channel * payload.stride};
-            auto const read_size{payload.base.fragments[i].size};
-            ::memcpy(current_write_ptr, read_ptr, read_size);
-            current_write_ptr += read_size;
+        for (uint32_t ch = 0; ch < output_channels; ++ch) {
+            if (ch >= payload.count) {
+                continue;
+            }
+            float *out = reinterpret_cast<float*>(audio_buffer + (ch * per_channel_bytes));
+            size_t out_frames_written = 0;
+
+            for (int frag = 0; frag < 2; ++frag) {
+                const auto frag_ptr = static_cast<const uint8_t*>(payload.base.fragments[frag].pointer);
+                const size_t frag_size = payload.base.fragments[frag].size;
+                if (!frag_ptr || frag_size == 0) {
+                    continue;
+                }
+
+                const float *src = reinterpret_cast<const float*>(frag_ptr + ch * payload.stride);
+                const size_t frag_frames = frag_size / sizeof(float);
+                const size_t remaining = sample_amount > out_frames_written ? (sample_amount - out_frames_written) : 0;
+                const size_t frames_to_copy = std::min(frag_frames, remaining);
+
+                std::memcpy(out + out_frames_written, src, frames_to_copy * sizeof(float));
+                out_frames_written += frames_to_copy;
+                if (out_frames_written >= sample_amount) {
+                    break;
+                }
+            }
         }
         obs_source_output_audio(source, &audio);
 
@@ -323,9 +423,18 @@ void mxl_source_data::capture_loop_video()
     
     // Get current grain index - start from current head
     mxlStatus status = mxlFlowReaderGetInfo(flow_reader, &flow_info);
+    mxlFlowRuntimeInfo runtime_info = {};
+    const uint64_t read_delay_ns = 40'000'000ULL;
+    const uint64_t read_delay_grains = std::max<uint64_t>(1, compute_read_delay_index(flow_info.config.common.grainRate, read_delay_ns));
     if (status == MXL_STATUS_OK) {
-        current_grain_index = flow_info.discrete.headIndex;
-        blog(LOG_INFO, "MXL Source: Starting from grain index %lu", current_grain_index);
+        if (mxlFlowReaderGetRuntimeInfo(flow_reader, &runtime_info) == MXL_STATUS_OK) {
+            current_grain_index = runtime_info.headIndex > read_delay_grains
+                ? (runtime_info.headIndex - read_delay_grains)
+                : runtime_info.headIndex;
+        } else {
+            current_grain_index = flow_info.runtime.headIndex;
+        }
+        blog(LOG_INFO, "MXL Source: Starting from grain index %" PRIu64, current_grain_index);
     } else {
         blog(LOG_WARNING, "MXL Source: Failed to get initial flow info, starting from 0");
         current_grain_index = 0;
@@ -368,14 +477,14 @@ void mxl_source_data::capture_loop_video()
                 static uint64_t frame_count = 0;
                 frame_count++;
                 if (frame_count % 50 == 0) { // Log every 50 frames
-                    blog(LOG_INFO, "MXL Source: Processed frame %lu, grain %lu", 
+                    blog(LOG_INFO, "MXL Source: Processed frame %" PRIu64 ", grain %" PRIu64, 
                          frame_count, current_grain_index);
                 }
                 
                 // Signal OBS that new frame is available
                 obs_source_output_video(source, &frame);
             } else {
-                blog(LOG_WARNING, "MXL Source: Failed to process grain %lu", current_grain_index);
+                blog(LOG_WARNING, "MXL Source: Failed to process grain %" PRIu64, current_grain_index);
             }
             current_grain_index++;
         } else if (status == MXL_ERR_TIMEOUT) {
@@ -383,12 +492,39 @@ void mxl_source_data::capture_loop_video()
             static int timeout_count = 0;
             timeout_count++;
             if (timeout_count % 100 == 0) { // Log every 100 timeouts
-                blog(LOG_DEBUG, "MXL Source: Timeout waiting for grain %lu (count: %d)", 
+                blog(LOG_DEBUG, "MXL Source: Timeout waiting for grain %" PRIu64 " (count: %d)", 
                      current_grain_index, timeout_count);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        } else if (status == MXL_ERR_OUT_OF_RANGE_TOO_EARLY) {
+            if (mxlFlowReaderGetRuntimeInfo(flow_reader, &runtime_info) == MXL_STATUS_OK) {
+                blog(LOG_WARNING, "MXL Source: Failed to get grain %" PRIu64 ": TOO EARLY. Last published %" PRIu64,
+                     current_grain_index, runtime_info.headIndex);
+            } else {
+                blog(LOG_WARNING, "MXL Source: Failed to get grain %" PRIu64 ": TOO EARLY", current_grain_index);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        } else if (status == MXL_ERR_OUT_OF_RANGE_TOO_LATE) {
+            if (mxlFlowReaderGetRuntimeInfo(flow_reader, &runtime_info) == MXL_STATUS_OK) {
+                current_grain_index = runtime_info.headIndex > read_delay_grains
+                    ? (runtime_info.headIndex - read_delay_grains)
+                    : runtime_info.headIndex;
+                blog(LOG_WARNING, "MXL Source: Too late, realigning to %" PRIu64, current_grain_index);
+            } else {
+                current_grain_index = mxlGetCurrentIndex(&flow_info.config.common.grainRate);
+                blog(LOG_WARNING, "MXL Source: Too late, realigning to current index %" PRIu64, current_grain_index);
+            }
+        } else if (status == MXL_ERR_FLOW_INVALID) {
+            blog(LOG_WARNING, "MXL Source: Flow invalid, attempting to reopen reader");
+            mxlReleaseFlowReader(mxl_instance, flow_reader);
+            flow_reader = nullptr;
+            if (mxlCreateFlowReader(mxl_instance, flow_id.c_str(), "", &flow_reader) == MXL_STATUS_OK) {
+                mxlFlowReaderGetInfo(flow_reader, &flow_info);
+                continue;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
         } else {
-            blog(LOG_WARNING, "MXL Source: Failed to get grain %lu (status: %d)", 
+            blog(LOG_WARNING, "MXL Source: Failed to get grain %" PRIu64 " (status: %d)", 
                  current_grain_index, status);
             // Don't increment grain index on error, try the same grain again
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -400,13 +536,13 @@ void mxl_source_data::capture_loop_video()
 
 bool mxl_source_data::process_grain_video(const mxlGrainInfo &grain_info, uint8_t *payload)
 {
-    if (!payload || grain_info.validSlices != grain_info.totalSlices) {
-        return false;
-    }
-    
     // Check if grain is marked as invalid
     if (grain_info.flags & MXL_GRAIN_FLAG_INVALID) {
         blog(LOG_DEBUG, "MXL Source: Received invalid grain, skipping");
+        return false;
+    }
+
+    if (!payload || grain_info.validSlices != grain_info.totalSlices) {
         return false;
     }
     
@@ -618,8 +754,8 @@ obs_properties_t *mxl_source_get_properties(void *data)
     obs_properties_add_button(props, "refresh_flows", "Refresh Flow List", refresh_flows_clicked);
     
     // For audio flows only. Channel selection
-    obs_properties_add_text(props, "audio_header", "Audio Settings. Only one channel is supported", OBS_TEXT_INFO);
-    obs_property_t *channel_prop = obs_properties_add_list(props, "selected_channel", "Selected audio channel", 
+    obs_properties_add_text(props, "audio_header", "Audio Settings. Output uses all available channels (up to 8)", OBS_TEXT_INFO);
+    obs_property_t *channel_prop = obs_properties_add_list(props, "selected_channel", "Selected channel (unused for multichannel)", 
                                                     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
     for (int i = 0; i < 16; ++i){
         char channel_name[16];

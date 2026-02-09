@@ -55,15 +55,28 @@ echo -e "${YELLOW}Configuring with CMake...${NC}"
 if [[ "$PLATFORM" == "macOS" ]]; then
     # Set default paths if not provided
     OBS_SOURCE_DIR="${OBS_SOURCE_DIR:-$HOME/obs-studio}"
+    OBS_BUILD_DIR="${OBS_BUILD_DIR:-$OBS_SOURCE_DIR/build}"
     MXL_SDK_PREFIX="${MXL_SDK_PREFIX:-$HOME/mxl-sdk/usr/local}"
     
     echo "Using OBS source directory: $OBS_SOURCE_DIR"
+    echo "Using OBS build directory: $OBS_BUILD_DIR"
     echo "Using MXL SDK prefix: $MXL_SDK_PREFIX"
+    if [ ! -f "$OBS_SOURCE_DIR/libobs/obs-module.h" ]; then
+        echo -e "${RED}OBS headers not found at: $OBS_SOURCE_DIR/libobs/obs-module.h${NC}"
+        echo -e "${RED}Set OBS_SOURCE_DIR to your OBS Studio source checkout.${NC}"
+        exit 1
+    fi
+    if [ ! -f "$OBS_BUILD_DIR/obsconfig.h" ] && [ ! -f "$OBS_BUILD_DIR/config/obsconfig.h" ]; then
+        echo -e "${RED}obsconfig.h not found. Configure OBS Studio to generate it:${NC}"
+        echo -e "${RED}  cmake -S \"$OBS_SOURCE_DIR\" -B \"$OBS_BUILD_DIR\"${NC}"
+        exit 1
+    fi
     
     cmake .. \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_OSX_ARCHITECTURES=arm64 \
         -DOBS_SOURCE_DIR="$OBS_SOURCE_DIR" \
+        -DOBS_BUILD_DIR="$OBS_BUILD_DIR" \
         -DMXL_SDK_PREFIX="$MXL_SDK_PREFIX"
 else
     cmake .. \
@@ -83,12 +96,16 @@ if [[ "$PLATFORM" == "macOS" ]]; then
     # Fix library paths for MXL SDK on macOS
     echo -e "${YELLOW}Fixing MXL library paths...${NC}"
     PLUGIN_PATH="$INSTALL_DIR/obs-mxl-output-plugin.plugin/Contents/MacOS/obs-mxl-output-plugin.so"
-    MXL_SDK_PATH="${MXL_SDK_PREFIX:-$HOME/mxl-sdk/usr/local}/lib/libmxl.0.dylib"
+    MXL_SDK_PATH="${MXL_SDK_PREFIX:-$HOME/mxl-sdk/usr/local}/lib/libmxl.1.dylib"
+    MXL_COMMON_PATH="${MXL_SDK_PREFIX:-$HOME/mxl-sdk/usr/local}/lib/libmxl-common.1.dylib"
 
     if [ -f "$PLUGIN_PATH" ]; then
-        # Fix MXL library path
-        install_name_tool -change @rpath/libmxl.0.dylib "$MXL_SDK_PATH" "$PLUGIN_PATH"
-        echo -e "${GREEN}Fixed MXL library path to: $MXL_SDK_PATH${NC}"
+        # Fix MXL library paths
+        install_name_tool -add_rpath "$MXL_SDK_PREFIX/lib" "$PLUGIN_PATH" 2>/dev/null || true
+        install_name_tool -change @rpath/libmxl.1.dylib "$MXL_SDK_PATH" "$PLUGIN_PATH"
+        install_name_tool -change @rpath/libmxl-common.1.dylib "$MXL_COMMON_PATH" "$PLUGIN_PATH" 2>/dev/null || true
+        install_name_tool -change @rpath/libmxl-common.1.dylib "$MXL_COMMON_PATH" "$MXL_SDK_PATH" 2>/dev/null || true
+        echo -e "${GREEN}Fixed MXL library paths to: $MXL_SDK_PREFIX/lib${NC}"
         echo -e "${GREEN}Qt-free plugin - no Qt dependencies to fix${NC}"
     else
         echo -e "${RED}Warning: Plugin not found at $PLUGIN_PATH${NC}"

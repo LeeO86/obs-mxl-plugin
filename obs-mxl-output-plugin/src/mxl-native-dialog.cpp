@@ -60,6 +60,9 @@ bool MXLNativeDialog::ShowSettingsDialog_Windows(Settings& settings) {
     if (settings.video_flow_id.empty()) {
         settings.video_flow_id = GenerateUUID();
     }
+    if (settings.audio_flow_id.empty()) {
+        settings.audio_flow_id = GenerateUUID();
+    }
     
     // For now, use a simple message box approach
     // In a full implementation, you'd create a custom dialog resource
@@ -67,9 +70,13 @@ bool MXLNativeDialog::ShowSettingsDialog_Windows(Settings& settings) {
     message += "MXL Domain Path: " + settings.domain_path + "\n";
     message += "Output Enabled: " + std::string(settings.output_enabled ? "Yes" : "No") + "\n";
     message += "Video Enabled: " + std::string(settings.video_enabled ? "Yes" : "No") + "\n";
+    message += "Audio Enabled: " + std::string(settings.audio_enabled ? "Yes" : "No") + "\n";
     
     if (settings.video_enabled) {
         message += "Video Flow ID: " + settings.video_flow_id + "\n";
+    }
+    if (settings.audio_enabled) {
+        message += "Audio Flow ID: " + settings.audio_flow_id + "\n";
     }
     
     message += "\nEdit config file to change settings.";
@@ -88,6 +95,9 @@ bool MXLNativeDialog::ShowSettingsDialog_Linux(Settings& settings) {
     // Auto-populate flow IDs if empty
     if (settings.video_flow_id.empty()) {
         settings.video_flow_id = GenerateUUID();
+    }
+    if (settings.audio_flow_id.empty()) {
+        settings.audio_flow_id = GenerateUUID();
     }
     
     // Initialize GTK if not already done
@@ -124,14 +134,26 @@ bool MXLNativeDialog::ShowSettingsDialog_Linux(Settings& settings) {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(video_check), settings.video_enabled);
     gtk_grid_attach(GTK_GRID(grid), video_check, 0, 2, 2, 1);
     
+    GtkWidget *audio_check = gtk_check_button_new_with_label("Enable Audio Stream");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(audio_check), settings.audio_enabled);
+    gtk_grid_attach(GTK_GRID(grid), audio_check, 0, 3, 2, 1);
+
     // Flow IDs (conditionally visible)
     GtkWidget *video_label = gtk_label_new("Video Flow ID:");
     GtkWidget *video_entry = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(video_entry), settings.video_flow_id.c_str());
     gtk_widget_set_visible(video_label, settings.video_enabled);
     gtk_widget_set_visible(video_entry, settings.video_enabled);
-    gtk_grid_attach(GTK_GRID(grid), video_label, 0, 3, 1, 1);
-    gtk_grid_attach(GTK_GRID(grid), video_entry, 1, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), video_label, 0, 4, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), video_entry, 1, 4, 1, 1);
+
+    GtkWidget *audio_label = gtk_label_new("Audio Flow ID:");
+    GtkWidget *audio_entry = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(audio_entry), settings.audio_flow_id.c_str());
+    gtk_widget_set_visible(audio_label, settings.audio_enabled);
+    gtk_widget_set_visible(audio_entry, settings.audio_enabled);
+    gtk_grid_attach(GTK_GRID(grid), audio_label, 0, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), audio_entry, 1, 5, 1, 1);
     
     // Callback function for toggling widget visibility
     auto toggle_callback = [](GtkToggleButton *button, gpointer user_data) {
@@ -148,9 +170,14 @@ bool MXLNativeDialog::ShowSettingsDialog_Linux(Settings& settings) {
     GtkWidget **video_widgets = new GtkWidget*[2];
     video_widgets[0] = video_label;
     video_widgets[1] = video_entry;
+
+    GtkWidget **audio_widgets = new GtkWidget*[2];
+    audio_widgets[0] = audio_label;
+    audio_widgets[1] = audio_entry;
     
     // Add signal handlers to show/hide flow ID fields when checkboxes change
     g_signal_connect(video_check, "toggled", G_CALLBACK(toggle_callback_ptr), (gpointer)video_widgets);
+    g_signal_connect(audio_check, "toggled", G_CALLBACK(toggle_callback_ptr), (gpointer)audio_widgets);
     
     gtk_widget_show_all(dialog);
     
@@ -160,12 +187,19 @@ bool MXLNativeDialog::ShowSettingsDialog_Linux(Settings& settings) {
         settings.domain_path = gtk_entry_get_text(GTK_ENTRY(domain_entry));
         settings.output_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(output_check));
         settings.video_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(video_check));
+        settings.audio_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(audio_check));
         
         // Only get flow IDs if streams are enabled
         if (settings.video_enabled) {
             settings.video_flow_id = gtk_entry_get_text(GTK_ENTRY(video_entry));
             if (settings.video_flow_id.empty()) {
                 settings.video_flow_id = GenerateUUID();
+            }
+        }
+        if (settings.audio_enabled) {
+            settings.audio_flow_id = gtk_entry_get_text(GTK_ENTRY(audio_entry));
+            if (settings.audio_flow_id.empty()) {
+                settings.audio_flow_id = GenerateUUID();
             }
         }
         

@@ -17,6 +17,8 @@ public:
         bool output_enabled;
         bool video_enabled;
         std::string video_flow_id;
+        bool audio_enabled;
+        std::string audio_flow_id;
     };
     
     // Show the settings dialog and return true if user clicked OK

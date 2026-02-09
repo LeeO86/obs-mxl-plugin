@@ -96,13 +96,16 @@ fi
 
 echo "All required packages found!"
 
+# Set MXL SDK prefix (can be overridden by env)
+MXL_SDK_PREFIX="${MXL_SDK_PREFIX:-$HOME/mxl-sdk/usr/local}"
+
 # Set environment variables for Linux build
-export CMAKE_PREFIX_PATH="$HOME/mxl-sdk/usr/local:$CMAKE_PREFIX_PATH"
-export PKG_CONFIG_PATH="$HOME/mxl-sdk/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
+export CMAKE_PREFIX_PATH="$MXL_SDK_PREFIX:$CMAKE_PREFIX_PATH"
+export PKG_CONFIG_PATH="$MXL_SDK_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
 
 # Run the main build script
 echo "Running build script..."
-./build-macos.sh
+MXL_SDK_PREFIX="$MXL_SDK_PREFIX" ./build-macos.sh
 
 echo ""
 echo "Linux build complete!"

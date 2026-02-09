@@ -18,10 +18,18 @@ message(STATUS "Building for ${PLATFORM_NAME}")
 
 # Platform-specific paths
 if(APPLE)
-    set(OBS_SOURCE_DIR "/Users/samisb/obs-studio" CACHE PATH "Path to OBS Studio source")
-    set(MXL_SDK_PREFIX "/Users/samisb/mxl-sdk/usr/local" CACHE PATH "Path to MXL SDK")
+    set(OBS_SOURCE_DIR "$ENV{HOME}/obs-studio" CACHE PATH "Path to OBS Studio source")
+    set(MXL_SDK_PREFIX "$ENV{HOME}/mxl-sdk/usr/local" CACHE PATH "Path to MXL SDK")
     set(OBS_APP_PATH "/Applications/OBS.app")
     set(OBS_FRAMEWORKS_DIR "${OBS_APP_PATH}/Contents/Frameworks")
+    set(OBS_BUILD_DIR "" CACHE PATH "Path to OBS Studio build directory (for obsconfig.h)")
+
+    # Optional SIMDe headers (required by OBS headers on macOS)
+    find_path(SIMDE_INCLUDE_DIR simde/x86/sse2.h
+        PATHS
+            /opt/homebrew/include
+            /usr/local/include
+    )
 elseif(UNIX)
     # Linux paths - try multiple common locations
     set(OBS_SOURCE_DIR "/usr/include/obs" CACHE PATH "Path to OBS Studio headers")
@@ -77,6 +85,24 @@ if(APPLE)
         "${OBS_SOURCE_DIR}/libobs"
         "${OBS_SOURCE_DIR}/UI/obs-frontend-api"
     )
+    if(OBS_BUILD_DIR)
+        find_path(OBS_CONFIG_DIR obsconfig.h
+            PATHS
+                "${OBS_BUILD_DIR}"
+                "${OBS_BUILD_DIR}/config"
+        )
+        if(OBS_CONFIG_DIR)
+            list(APPEND OBS_INCLUDE_DIRS "${OBS_CONFIG_DIR}")
+            message(STATUS "Found OBS config headers at: ${OBS_CONFIG_DIR}")
+        endif()
+    endif()
+    if(NOT OBS_CONFIG_DIR)
+        message(FATAL_ERROR "obsconfig.h not found. Configure OBS Studio to generate it and set OBS_BUILD_DIR to the build directory.")
+    endif()
+    if(SIMDE_INCLUDE_DIR)
+        list(APPEND OBS_INCLUDE_DIRS "${SIMDE_INCLUDE_DIR}")
+        message(STATUS "Found SIMDe headers at: ${SIMDE_INCLUDE_DIR}")
+    endif()
     set(OBS_LIBRARIES
         "${OBS_FRAMEWORKS_DIR}/libobs.framework/Versions/A/libobs"
         "${OBS_FRAMEWORKS_DIR}/obs-frontend-api.dylib"

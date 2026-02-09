@@ -10,6 +10,36 @@
 #include <random>
 #include <iomanip>
 #include <inttypes.h>
+#include <unistd.h>
+#include <cstring>
+
+namespace {
+const char *mxl_status_to_string(mxlStatus status)
+{
+    switch (status) {
+    case MXL_STATUS_OK: return "MXL_STATUS_OK";
+    case MXL_ERR_UNKNOWN: return "MXL_ERR_UNKNOWN";
+    case MXL_ERR_FLOW_NOT_FOUND: return "MXL_ERR_FLOW_NOT_FOUND";
+    case MXL_ERR_OUT_OF_RANGE_TOO_LATE: return "MXL_ERR_OUT_OF_RANGE_TOO_LATE";
+    case MXL_ERR_OUT_OF_RANGE_TOO_EARLY: return "MXL_ERR_OUT_OF_RANGE_TOO_EARLY";
+    case MXL_ERR_INVALID_FLOW_READER: return "MXL_ERR_INVALID_FLOW_READER";
+    case MXL_ERR_INVALID_FLOW_WRITER: return "MXL_ERR_INVALID_FLOW_WRITER";
+    case MXL_ERR_TIMEOUT: return "MXL_ERR_TIMEOUT";
+    case MXL_ERR_INVALID_ARG: return "MXL_ERR_INVALID_ARG";
+    case MXL_ERR_CONFLICT: return "MXL_ERR_CONFLICT";
+    case MXL_ERR_PERMISSION_DENIED: return "MXL_ERR_PERMISSION_DENIED";
+    case MXL_ERR_FLOW_INVALID: return "MXL_ERR_FLOW_INVALID";
+    case MXL_ERR_INTERRUPTED: return "MXL_ERR_INTERRUPTED";
+    case MXL_ERR_NO_FABRIC: return "MXL_ERR_NO_FABRIC";
+    case MXL_ERR_INVALID_STATE: return "MXL_ERR_INVALID_STATE";
+    case MXL_ERR_INTERNAL: return "MXL_ERR_INTERNAL";
+    case MXL_ERR_NOT_READY: return "MXL_ERR_NOT_READY";
+    case MXL_ERR_NOT_FOUND: return "MXL_ERR_NOT_FOUND";
+    case MXL_ERR_EXISTS: return "MXL_ERR_EXISTS";
+    default: return "MXL_STATUS_UNKNOWN_CODE";
+    }
+}
+} // namespace
 
 // Version and build information
 #define MXL_OUTPUT_PLUGIN_VERSION "0.0.1"
@@ -25,15 +55,29 @@ mxl_output_data::mxl_output_data()
     : output(nullptr)
     , mxl_instance(nullptr)
     , video_flow_writer(nullptr)
+    , flow_config{}
+    , audio_flow_writer(nullptr)
+    , audio_flow_config{}
     , video_enabled(true)
+    , audio_enabled(false)
     , video_width(0)
     , video_height(0)
     , video_fps_num(30)
     , video_fps_den(1)
     , video_format(VIDEO_FORMAT_NONE)
+    , audio_sample_rate(0)
+    , audio_channel_count(0)
     , thread_active(false)
     , output_active(false)
     , video_grain_index(0)
+    , last_grain_index(0)
+    , last_grain_index_valid(false)
+    , mxl_time_offset_ns(0)
+    , has_time_offset(false)
+    , last_audio_index_end(0)
+    , last_audio_index_valid(false)
+    , audio_time_offset_ns(0)
+    , audio_has_time_offset(false)
     , start_timestamp(0)
     , video_frame_interval_ns(33333333) // Default to ~30fps
 {
@@ -101,7 +145,7 @@ bool mxl_output_data::initialize_mxl()
         }
     }
     
-    // Create MXL instance
+    // Create MXL instance (history duration is controlled by domain options)
     mxl_instance = mxlCreateInstance(domain_path.c_str(), "");
     if (!mxl_instance) {
         blog(LOG_ERROR, "MXL Output: Failed to create MXL instance for domain: %s", 
@@ -114,10 +158,18 @@ bool mxl_output_data::initialize_mxl()
         video_flow_id = generate_uuid();
         blog(LOG_INFO, "MXL Output: Generated video flow ID: %s", video_flow_id.c_str());
     }
+    if (audio_enabled && audio_flow_id.empty()) {
+        audio_flow_id = generate_uuid();
+        blog(LOG_INFO, "MXL Output: Generated audio flow ID: %s", audio_flow_id.c_str());
+    }
     
     // Create video flow using mxlCreateFlow (which handles descriptor creation)
     if (video_enabled && !create_video_flow()) {
         blog(LOG_ERROR, "MXL Output: Failed to create video flow");
+        return false;
+    }
+    if (audio_enabled && !create_audio_flow()) {
+        blog(LOG_ERROR, "MXL Output: Failed to create audio flow");
         return false;
     }
     
@@ -149,12 +201,12 @@ void mxl_output_data::cleanup_mxl()
         mxlReleaseFlowWriter(mxl_instance, video_flow_writer);
         video_flow_writer = nullptr;
     }
+    if (audio_flow_writer) {
+        mxlReleaseFlowWriter(mxl_instance, audio_flow_writer);
+        audio_flow_writer = nullptr;
+    }
     
-    // Destroy flows (like GStreamer example)
     if (mxl_instance) {
-        if (!video_flow_id.empty()) {
-            mxlDestroyFlow(mxl_instance, video_flow_id.c_str());
-        }
         mxlDestroyInstance(mxl_instance);
         mxl_instance = nullptr;
     }
@@ -165,28 +217,106 @@ bool mxl_output_data::create_video_flow()
     if (!video_enabled || video_flow_id.empty()) {
         return true;
     }
+
+    if (video_width == 0 || video_height == 0 || video_fps_num == 0) {
+        blog(LOG_ERROR, "MXL Output: Invalid video settings (w:%u h:%u fps:%u/%u)",
+             video_width, video_height, video_fps_num, video_fps_den);
+        return false;
+    }
     
-    // Create the flow using the descriptor
+    // Create the flow writer (creates the flow if needed)
     std::string flow_descriptor = generate_flow_descriptor_json(true);
-    mxlFlowInfo flow_info_temp;
-    
-    mxlStatus status = mxlCreateFlow(mxl_instance, flow_descriptor.c_str(), nullptr, &flow_info_temp);
+    flow_config = {};
+    bool created = false;
+    mxlStatus status = mxlCreateFlowWriter(
+        mxl_instance,
+        flow_descriptor.c_str(),
+        "",
+        &video_flow_writer,
+        &flow_config,
+        &created);
     if (status != MXL_STATUS_OK) {
-        blog(LOG_ERROR, "MXL Output: Failed to create video flow (status: %d)", status);
+        blog(LOG_ERROR, "MXL Output: Failed to create video flow writer for flow: %s (status: %d %s)", 
+             video_flow_id.c_str(), status, mxl_status_to_string(status));
+        blog(LOG_ERROR, "MXL Output: Video flow descriptor: %s", flow_descriptor.c_str());
         return false;
     }
-    
-    // Create the flow writer
-    status = mxlCreateFlowWriter(mxl_instance, video_flow_id.c_str(), "", &video_flow_writer);
-    if (status != MXL_STATUS_OK) {
-        blog(LOG_ERROR, "MXL Output: Failed to create video flow writer for flow: %s (status: %d)", 
-             video_flow_id.c_str(), status);
-        
-        // Clean up the flow we created
-        mxlDestroyFlow(mxl_instance, video_flow_id.c_str());
+    if (!created) {
+        blog(LOG_ERROR, "MXL Output: Flow writer not created (flow already has an active writer): %s", 
+             video_flow_id.c_str());
+        mxlReleaseFlowWriter(mxl_instance, video_flow_writer);
+        video_flow_writer = nullptr;
         return false;
     }
+
+    if (flow_config.common.format != MXL_DATA_FORMAT_VIDEO) {
+        blog(LOG_ERROR, "MXL Output: Flow is not video (format: %u)", flow_config.common.format);
+        mxlReleaseFlowWriter(mxl_instance, video_flow_writer);
+        video_flow_writer = nullptr;
+        return false;
+    }
+
+    if (flow_config.common.grainRate.numerator > 0) {
+        video_frame_interval_ns = (1000000000ULL * flow_config.common.grainRate.denominator) /
+                                  flow_config.common.grainRate.numerator;
+    }
     
+    return true;
+}
+
+bool mxl_output_data::create_audio_flow()
+{
+    if (!audio_enabled || audio_flow_id.empty()) {
+        return true;
+    }
+
+    if (audio_sample_rate == 0 || audio_channel_count == 0) {
+        blog(LOG_ERROR, "MXL Output: Invalid audio settings (rate:%u channels:%u)",
+             audio_sample_rate, audio_channel_count);
+        return false;
+    }
+
+    std::string flow_descriptor = generate_flow_descriptor_json(false);
+    audio_flow_config = {};
+    bool created = false;
+    mxlStatus status = mxlCreateFlowWriter(
+        mxl_instance,
+        flow_descriptor.c_str(),
+        "",
+        &audio_flow_writer,
+        &audio_flow_config,
+        &created);
+    if (status != MXL_STATUS_OK) {
+        blog(LOG_ERROR, "MXL Output: Failed to create audio flow writer for flow: %s (status: %d %s)",
+             audio_flow_id.c_str(), status, mxl_status_to_string(status));
+        blog(LOG_ERROR, "MXL Output: Audio flow descriptor: %s", flow_descriptor.c_str());
+        return false;
+    }
+    if (!created) {
+        blog(LOG_ERROR, "MXL Output: Audio flow writer not created (flow already has an active writer): %s",
+             audio_flow_id.c_str());
+        mxlReleaseFlowWriter(mxl_instance, audio_flow_writer);
+        audio_flow_writer = nullptr;
+        return false;
+    }
+    if (audio_flow_config.common.format != MXL_DATA_FORMAT_AUDIO) {
+        blog(LOG_ERROR, "MXL Output: Flow is not audio (format: %u)", audio_flow_config.common.format);
+        mxlReleaseFlowWriter(mxl_instance, audio_flow_writer);
+        audio_flow_writer = nullptr;
+        return false;
+    }
+
+    if (audio_flow_config.common.grainRate.numerator > 0) {
+        int32_t denom = audio_flow_config.common.grainRate.denominator;
+        if (denom == 0) {
+            denom = 1;
+        }
+        audio_sample_rate = static_cast<uint32_t>(audio_flow_config.common.grainRate.numerator / denom);
+    }
+    if (audio_flow_config.continuous.channelCount > 0) {
+        audio_channel_count = audio_flow_config.continuous.channelCount;
+    }
+
     return true;
 }
 
@@ -223,6 +353,36 @@ bool mxl_output_data::create_video_flow_descriptor()
     return true;
 }
 
+bool mxl_output_data::create_audio_flow_descriptor()
+{
+    if (!audio_enabled || audio_flow_id.empty()) {
+        return true;
+    }
+
+    std::string flow_dir = domain_path + "/" + audio_flow_id + FLOW_DIRECTORY_NAME_SUFFIX;
+    std::string descriptor_path = flow_dir + "/" + FLOW_DESCRIPTOR_FILE_NAME;
+
+    try {
+        std::filesystem::create_directories(flow_dir);
+    } catch (const std::exception& e) {
+        blog(LOG_ERROR, "MXL Output: Failed to create audio flow directory: %s", e.what());
+        return false;
+    }
+
+    std::string descriptor_json = generate_flow_descriptor_json(false);
+    std::ofstream descriptor_file(descriptor_path);
+    if (!descriptor_file.is_open()) {
+        blog(LOG_ERROR, "MXL Output: Failed to create audio flow descriptor file: %s", descriptor_path.c_str());
+        return false;
+    }
+
+    descriptor_file << descriptor_json;
+    descriptor_file.close();
+
+    blog(LOG_INFO, "MXL Output: Created audio flow descriptor: %s", descriptor_path.c_str());
+    return true;
+}
+
 
 std::string mxl_output_data::get_mxl_video_media_type(enum video_format format)
 {
@@ -245,35 +405,45 @@ size_t mxl_output_data::calculate_video_frame_size(enum video_format format, uin
 std::string mxl_output_data::generate_flow_descriptor_json(bool is_video)
 {
     std::stringstream ss;
-    
-    ss << "{\n";
-    ss << "  \"description\": \"MXL Video Output Flow\",\n";
-    ss << "  \"id\": \"" << video_flow_id << "\",\n";
-    ss << "  \"tags\": {\n";
-    ss << "     \"urn:x-nmos:tag:grouphint/v1.0\": [\"obs:obs-output:device\"]\n";
-    ss << "  },\n";
-    ss << "  \"format\": \"urn:x-nmos:format:video\",\n";
-    ss << "  \"label\": \"MXL Video Output\",\n";
-    ss << "  \"parents\": [],\n";
-    ss << "  \"media_type\": \"video/v210\",\n";
-    ss << "  \"grain_rate\": {\n";
-    ss << "    \"numerator\": " << video_fps_num << ",\n";
-    ss << "    \"denominator\": " << video_fps_den << "\n";
-    ss << "  },\n";
-    ss << "  \"frame_width\": " << video_width << ",\n";
-    ss << "  \"frame_height\": " << video_height << ",\n";
-    ss << "  \"colorspace\": \"BT709\",\n";
-    ss << "  \"components\": [\n";
-    ss << "    {\n";
-    ss << "      \"name\": \"Y\",\n";
-    ss << "      \"width\": " << video_width << ",\n";
-    ss << "      \"height\": " << video_height << ",\n";
-    ss << "      \"bit_depth\": 10\n";
-    ss << "    },\n";
-    ss << "    {\n";
-    ss << "      \"name\": \"Cb\",\n";
-    ss << "      \"width\": " << (video_width / 2) << ",\n";
-    ss << "      \"height\": " << video_height << ",\n";
+
+    if (is_video) {
+        std::string flow_label = "MXL Video Output";
+        std::string flow_desc = "MXL Video Output Flow";
+        if (video_height > 0 && video_fps_den > 0) {
+            flow_label = "MXL Video Output " + std::to_string(video_height) + "p" +
+                         std::to_string(video_fps_num / video_fps_den);
+            flow_desc = flow_label;
+        }
+
+        ss << "{\n";
+        ss << "  \"description\": \"" << flow_desc << "\",\n";
+        ss << "  \"id\": \"" << video_flow_id << "\",\n";
+        ss << "  \"tags\": {\n";
+        ss << "     \"urn:x-nmos:tag:grouphint/v1.0\": [\"obs-output:video\"]\n";
+        ss << "  },\n";
+        ss << "  \"format\": \"urn:x-nmos:format:video\",\n";
+        ss << "  \"label\": \"" << flow_label << "\",\n";
+        ss << "  \"parents\": [],\n";
+        ss << "  \"media_type\": \"video/v210\",\n";
+        ss << "  \"grain_rate\": {\n";
+        ss << "    \"numerator\": " << video_fps_num << ",\n";
+        ss << "    \"denominator\": " << video_fps_den << "\n";
+        ss << "  },\n";
+        ss << "  \"frame_width\": " << video_width << ",\n";
+        ss << "  \"frame_height\": " << video_height << ",\n";
+        ss << "  \"interlace_mode\": \"progressive\",\n";
+        ss << "  \"colorspace\": \"BT709\",\n";
+        ss << "  \"components\": [\n";
+        ss << "    {\n";
+        ss << "      \"name\": \"Y\",\n";
+        ss << "      \"width\": " << video_width << ",\n";
+        ss << "      \"height\": " << video_height << ",\n";
+        ss << "      \"bit_depth\": 10\n";
+        ss << "    },\n";
+        ss << "    {\n";
+        ss << "      \"name\": \"Cb\",\n";
+        ss << "      \"width\": " << (video_width / 2) << ",\n";
+        ss << "      \"height\": " << video_height << ",\n";
         ss << "      \"bit_depth\": 10\n";
         ss << "    },\n";
         ss << "    {\n";
@@ -284,7 +454,31 @@ std::string mxl_output_data::generate_flow_descriptor_json(bool is_video)
         ss << "    }\n";
         ss << "  ]\n";
         ss << "}";
-    
+    } else {
+        uint32_t sample_rate = audio_sample_rate > 0 ? audio_sample_rate : 48000;
+        uint32_t channels = audio_channel_count > 0 ? audio_channel_count : 2;
+        std::string flow_label = "MXL Audio Output";
+        std::string flow_desc = "MXL Audio Output Flow";
+
+        ss << "{\n";
+        ss << "  \"description\": \"" << flow_desc << "\",\n";
+        ss << "  \"id\": \"" << audio_flow_id << "\",\n";
+        ss << "  \"tags\": {\n";
+        ss << "     \"urn:x-nmos:tag:grouphint/v1.0\": [\"obs-output:audio\"]\n";
+        ss << "  },\n";
+        ss << "  \"format\": \"urn:x-nmos:format:audio\",\n";
+        ss << "  \"label\": \"" << flow_label << "\",\n";
+        ss << "  \"parents\": [],\n";
+        ss << "  \"media_type\": \"audio/float32\",\n";
+        ss << "  \"sample_rate\": {\n";
+        ss << "    \"numerator\": " << sample_rate << ",\n";
+        ss << "    \"denominator\": 1\n";
+        ss << "  },\n";
+        ss << "  \"channel_count\": " << channels << ",\n";
+        ss << "  \"bit_depth\": 32\n";
+        ss << "}";
+    }
+
     return ss.str();
 }
 
@@ -327,14 +521,45 @@ bool mxl_output_data::process_video_frame(std::unique_ptr<video_frame_data> fram
         return false;
     }
     
-    // Use proper MXL timing like GStreamer example - get current time-based index
-    mxlRational frame_rate = {static_cast<int32_t>(video_fps_num), static_cast<int32_t>(video_fps_den)};
-    uint64_t grain_index = mxlGetCurrentIndex(&frame_rate);
+    mxlRational frame_rate = flow_config.common.grainRate;
+    if (frame_rate.numerator == 0) {
+        frame_rate = {static_cast<int32_t>(video_fps_num), static_cast<int32_t>(video_fps_den)};
+    }
+
+    uint64_t current_index = mxlGetCurrentIndex(&frame_rate);
+    uint64_t grain_index = current_index;
+
+    if (frame->timestamp > 0) {
+        if (!has_time_offset) {
+            mxl_time_offset_ns = static_cast<int64_t>(mxlGetTime()) - static_cast<int64_t>(frame->timestamp);
+            has_time_offset = true;
+        }
+        uint64_t mxl_ts = static_cast<uint64_t>(static_cast<int64_t>(frame->timestamp) + mxl_time_offset_ns);
+        grain_index = mxlTimestampToIndex(&frame_rate, mxl_ts);
+
+        uint32_t grain_count = flow_config.discrete.grainCount;
+        if (grain_count > 0 && grain_index > current_index && (grain_index - current_index) > grain_count) {
+            grain_index = current_index + grain_count - 1;
+        }
+    }
+
+    if (last_grain_index_valid) {
+        if (grain_index <= last_grain_index) {
+            grain_index = last_grain_index + 1;
+        } else if (grain_index > last_grain_index + 1) {
+            for (uint64_t idx = last_grain_index + 1; idx < grain_index; ++idx) {
+                if (!write_invalid_grain(idx)) {
+                    blog(LOG_WARNING, "MXL Output: Failed to write invalid grain %" PRIu64, idx);
+                    break;
+                }
+            }
+        }
+    }
     
     // Log grain writing occasionally to avoid spam
     static uint64_t last_logged_video_grain = 0;
     if (grain_index % 100 == 0 && grain_index != last_logged_video_grain) {
-        blog(LOG_INFO, "MXL Output: Writing video grain %" PRIu64 " (rate: %lld/%lld)", 
+        blog(LOG_DEBUG, "MXL Output: Writing video grain %" PRIu64 " (rate: %lld/%lld)",
              grain_index, (long long)frame_rate.numerator, (long long)frame_rate.denominator);
         last_logged_video_grain = grain_index;
     }
@@ -373,7 +598,150 @@ bool mxl_output_data::process_video_frame(std::unique_ptr<video_frame_data> fram
     
     // Update our counter for statistics
     video_grain_index.fetch_add(1);
+    last_grain_index = grain_index;
+    last_grain_index_valid = true;
     
+    return true;
+}
+
+bool mxl_output_data::write_audio_samples(struct audio_data *frames)
+{
+    if (!audio_flow_writer || !frames || frames->frames == 0) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(audio_mutex);
+
+    mxlRational sample_rate = audio_flow_config.common.grainRate;
+    if (sample_rate.numerator == 0) {
+        sample_rate = {static_cast<int32_t>(audio_sample_rate), 1};
+    }
+
+    uint64_t current_index = mxlGetCurrentIndex(&sample_rate);
+    uint64_t start_index = current_index;
+
+    if (frames->timestamp > 0) {
+        if (!audio_has_time_offset) {
+            audio_time_offset_ns = static_cast<int64_t>(mxlGetTime()) - static_cast<int64_t>(frames->timestamp);
+            audio_has_time_offset = true;
+        }
+        uint64_t mxl_ts = static_cast<uint64_t>(static_cast<int64_t>(frames->timestamp) + audio_time_offset_ns);
+        start_index = mxlTimestampToIndex(&sample_rate, mxl_ts);
+
+        uint32_t buffer_length = audio_flow_config.continuous.bufferLength;
+        if (buffer_length > 0 && start_index > current_index &&
+            (start_index - current_index) > buffer_length) {
+            start_index = current_index + buffer_length - 1;
+        }
+    }
+
+    uint64_t count = frames->frames;
+    if (last_audio_index_valid) {
+        if (start_index < last_audio_index_end) {
+            start_index = last_audio_index_end;
+        } else if (start_index > last_audio_index_end) {
+            uint64_t gap = start_index - last_audio_index_end;
+            if (!write_silence_samples(last_audio_index_end, gap)) {
+                blog(LOG_WARNING, "MXL Output: Failed to write silence for gap (%" PRIu64 " samples)", gap);
+            }
+        }
+    }
+
+    mxlMutableWrappedMultiBufferSlice payload = {};
+    mxlStatus status = mxlFlowWriterOpenSamples(audio_flow_writer, start_index, count, &payload);
+    if (status != MXL_STATUS_OK) {
+        blog(LOG_ERROR, "MXL Output: Failed to open audio samples at %" PRIu64 " (status: %d)", start_index, status);
+        return false;
+    }
+
+    size_t channels = payload.count;
+    size_t offset_samples = 0;
+    for (int frag = 0; frag < 2; ++frag) {
+        auto &fragment = payload.base.fragments[frag];
+        if (!fragment.pointer || fragment.size == 0) {
+            continue;
+        }
+        size_t fragment_samples = fragment.size / sizeof(float);
+        for (size_t ch = 0; ch < channels; ++ch) {
+            uint8_t *dst = static_cast<uint8_t*>(fragment.pointer) + ch * payload.stride;
+            float *src = nullptr;
+            if (audio_channel_count == 0 || ch < audio_channel_count) {
+                src = frames->data[ch] ? reinterpret_cast<float*>(frames->data[ch]) + offset_samples : nullptr;
+            }
+            if (src) {
+                memcpy(dst, src, fragment_samples * sizeof(float));
+            } else {
+                memset(dst, 0, fragment_samples * sizeof(float));
+            }
+        }
+        offset_samples += fragment_samples;
+    }
+
+    status = mxlFlowWriterCommitSamples(audio_flow_writer);
+    if (status != MXL_STATUS_OK) {
+        blog(LOG_ERROR, "MXL Output: Failed to commit audio samples at %" PRIu64 " (status: %d)", start_index, status);
+        mxlFlowWriterCancelSamples(audio_flow_writer);
+        return false;
+    }
+
+    last_audio_index_end = start_index + count;
+    last_audio_index_valid = true;
+    return true;
+}
+
+bool mxl_output_data::write_silence_samples(uint64_t start_index, uint64_t count)
+{
+    if (!audio_flow_writer || count == 0) {
+        return false;
+    }
+
+    mxlMutableWrappedMultiBufferSlice payload = {};
+    mxlStatus status = mxlFlowWriterOpenSamples(audio_flow_writer, start_index, count, &payload);
+    if (status != MXL_STATUS_OK) {
+        return false;
+    }
+
+    for (int frag = 0; frag < 2; ++frag) {
+        auto &fragment = payload.base.fragments[frag];
+        if (!fragment.pointer || fragment.size == 0) {
+            continue;
+        }
+        for (size_t ch = 0; ch < payload.count; ++ch) {
+            uint8_t *dst = static_cast<uint8_t*>(fragment.pointer) + ch * payload.stride;
+            memset(dst, 0, fragment.size);
+        }
+    }
+
+    status = mxlFlowWriterCommitSamples(audio_flow_writer);
+    if (status != MXL_STATUS_OK) {
+        mxlFlowWriterCancelSamples(audio_flow_writer);
+        return false;
+    }
+
+    last_audio_index_end = start_index + count;
+    last_audio_index_valid = true;
+    return true;
+}
+
+bool mxl_output_data::write_invalid_grain(uint64_t grain_index)
+{
+    mxlGrainInfo grain_info = {};
+    uint8_t* payload = nullptr;
+
+    mxlStatus status = mxlFlowWriterOpenGrain(video_flow_writer, grain_index, &grain_info, &payload);
+    if (status != MXL_STATUS_OK) {
+        return false;
+    }
+
+    grain_info.flags = MXL_GRAIN_FLAG_INVALID;
+    grain_info.validSlices = 0;
+
+    status = mxlFlowWriterCommitGrain(video_flow_writer, &grain_info);
+    if (status != MXL_STATUS_OK) {
+        mxlFlowWriterCancelGrain(video_flow_writer);
+        return false;
+    }
+
     return true;
 }
 
@@ -409,7 +777,7 @@ bool mxl_output_data::convert_to_v210(uint8_t *src_data, enum video_format src_f
     // Only log conversion details for unsupported formats or first conversion
     static bool first_conversion = true;
     if (first_conversion || src_format != VIDEO_FORMAT_NV12) {
-        blog(LOG_INFO, "MXL Output: Converting format %d to v210 (%dx%d)", src_format, width, height);
+        blog(LOG_DEBUG, "MXL Output: Converting format %d to v210 (%dx%d)", src_format, width, height);
         first_conversion = false;
     }
     
