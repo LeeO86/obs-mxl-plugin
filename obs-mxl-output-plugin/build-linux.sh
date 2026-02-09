@@ -7,13 +7,22 @@ set -e
 
 echo "Setting up Linux build environment for OBS MXL Output Plugin..."
 
-# Check for required packages
+# Check for required packages (distro-agnostic)
 check_package() {
-    if ! dpkg -l | grep -q "^ii  $1"; then
-        echo "Missing package: $1"
+    local pkg="$1"
+    if command -v dpkg >/dev/null 2>&1; then
+        dpkg -l | grep -q "^ii  $pkg" && return 0
         return 1
+    elif command -v rpm >/dev/null 2>&1; then
+        rpm -q "$pkg" >/dev/null 2>&1 && return 0
+        return 1
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -Qi "$pkg" >/dev/null 2>&1 && return 0
+        return 1
+    else
+        echo "Package manager not detected; skipping package check for: $pkg"
+        return 0
     fi
-    return 0
 }
 
 # Check for OBS headers in common locations
@@ -92,30 +101,27 @@ check_package "libgtk-3-dev" || { echo "Install with: sudo apt install libgtk-3-
 # Check for OBS Studio installation and headers
 echo "Checking for OBS Studio..."
 if ! command -v obs &> /dev/null; then
-    echo "OBS Studio not found. Install with:"
-    echo "  sudo add-apt-repository ppa:obsproject/obs-studio"
-    echo "  sudo apt update"
-    echo "  sudo apt install obs-studio"
+    echo "OBS Studio not found in PATH. Ensure OBS is installed."
+    echo "On Debian/Ubuntu: sudo apt install obs-studio"
+    echo "On Fedora:        sudo dnf install obs-studio"
+    echo "On Arch:          sudo pacman -S obs-studio"
     MISSING_PACKAGES=1
 fi
 
 echo "Checking for OBS development headers..."
 if ! check_obs_headers; then
     echo "OBS development headers not found."
-    echo "You may need to:"
-    echo "1. Build OBS from source, or"
-    echo "2. Install from a PPA that includes dev headers:"
-    echo "   sudo add-apt-repository ppa:obsproject/obs-studio"
-    echo "   sudo apt update"
-    echo "   sudo apt install obs-studio"
-    echo "3. Or manually install headers from OBS source"
+    echo "You may need to build OBS from source or install dev headers."
+    echo "Debian/Ubuntu: sudo apt install obs-studio"
+    echo "Fedora:        sudo dnf install obs-studio-devel"
+    echo "Arch:          sudo pacman -S obs-studio"
     MISSING_PACKAGES=1
 fi
 
 echo "Checking for OBS libraries..."
 if ! check_obs_libraries; then
     echo "OBS libraries not found."
-    echo "Install OBS Studio first: sudo apt install obs-studio"
+    echo "Install OBS Studio first (package name varies by distro)."
     MISSING_PACKAGES=1
 fi
 

@@ -103,9 +103,30 @@ MXL_SDK_PREFIX="${MXL_SDK_PREFIX:-$HOME/mxl-sdk/usr/local}"
 export CMAKE_PREFIX_PATH="$MXL_SDK_PREFIX:$CMAKE_PREFIX_PATH"
 export PKG_CONFIG_PATH="$MXL_SDK_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
 
-# Run the main build script
-echo "Running build script..."
-MXL_SDK_PREFIX="$MXL_SDK_PREFIX" ./build-macos.sh
+# Clean and create build directory
+echo "Preparing build directory..."
+rm -rf build
+mkdir -p build
+cd build
+
+# Configure with CMake, passing MXL SDK path if found
+echo "Configuring with CMake..."
+CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
+if [ -n "$MXL_SDK_PREFIX" ]; then
+    CMAKE_ARGS="$CMAKE_ARGS -DMXL_SDK_PREFIX=$MXL_SDK_PREFIX"
+fi
+
+cmake .. $CMAKE_ARGS
+
+# Build
+echo "Building..."
+cmake --build . --config Release -j$(nproc)
+
+# Install
+echo "Installing..."
+cmake --install . --config Release
+
+cd ..
 
 echo ""
 echo "Linux build complete!"
