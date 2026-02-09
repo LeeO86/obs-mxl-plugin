@@ -5,6 +5,9 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 echo "Setting up Linux build environment for OBS MXL Output Plugin..."
 
 # Check for required packages (distro-agnostic)
@@ -180,11 +183,11 @@ cmake .. $CMAKE_ARGS
 
 # Build
 echo "Building..."
-make -j$(nproc)
+cmake --build . --config Release -j$(nproc)
 
 # Install
 echo "Installing..."
-make install
+cmake --install . --config Release
 
 cd ..
 
