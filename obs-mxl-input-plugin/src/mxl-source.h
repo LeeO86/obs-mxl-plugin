@@ -21,6 +21,7 @@ struct mxl_flow_info {
     std::string label;
     std::string description;
     std::string format;
+    std::string interlace_mode; // video flows: "progressive", "interlaced_tff", ...; empty when not given
     bool active;
 };
 
@@ -39,6 +40,13 @@ struct mxl_source_data {
     std::string flow_id;
     // Configuration: audio
     uint8_t selected_channel;
+
+    // Why the selected flow is not shown (e.g. an interlaced video flow); empty while it is.
+    // Written where the source is (re)initialised, read by the properties dialog: guard with status_mutex.
+    std::mutex status_mutex;
+    std::string status_message;
+    // A grain shorter than the frame was logged for this source (capture thread).
+    std::atomic<bool> short_grain_logged{false};
     
     // Threading
     std::thread capture_thread;

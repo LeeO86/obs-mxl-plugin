@@ -14,7 +14,7 @@
 #include <cstring>
 
 // Version and build information
-#define MXL_PLUGIN_VERSION "0.0.1-alpha"
+#define MXL_PLUGIN_VERSION "0.0.2-alpha"
 #define MXL_BUILD_ID __DATE__ "_" __TIME__
 #define MXL_BUILD_TIMESTAMP __DATE__ " " __TIME__
 
@@ -97,6 +97,11 @@ mxl_source_data::~mxl_source_data()
 bool mxl_source_data::initialize_mxl()
 {
     cleanup_mxl();
+    {
+        std::lock_guard<std::mutex> lock(status_mutex);
+        status_message.clear();
+    }
+    short_grain_logged = false;
     
     // Log version information
     blog(LOG_INFO, "MXL Source Plugin v%s [ID: %s] initializing flow %s", 
@@ -179,6 +184,22 @@ bool mxl_source_data::initialize_video(std::string& flow_descriptor)
     width = static_cast<uint32_t>(parser.getNumber("frame_width"));
     height = static_cast<uint32_t>(parser.getNumber("frame_height"));
     std::string media_type = parser.getString("media_type");
+
+    // Progressive only. MXL keeps an interlaced flow as one field per grain (height / 2 lines at
+    // twice the declared rate); reading such a grain as a whole frame reads past its end.
+    std::string interlace_mode = parser.getString("interlace_mode");
+    if (!interlace_mode.empty() && interlace_mode != "progressive") {
+        {
+            std::lock_guard<std::mutex> lock(status_mutex);
+            status_message = "Flow not shown: it is " + interlace_mode + "; only progressive video flows are supported";
+        }
+        blog(LOG_ERROR, "MXL Source: Refusing flow %s: interlace_mode is %s; only progressive video flows are supported",
+             flow_id.c_str(), interlace_mode.c_str());
+        width = 0;
+        height = 0;
+        obs_source_output_video(source, nullptr);
+        return false;
+    }
     
     if (width == 0 || height == 0) {
         blog(LOG_ERROR, "MXL Source: Invalid video dimensions: %dx%d", width, height);
@@ -678,6 +699,10 @@ static bool domain_path_changed(obs_properties_t *props, obs_property_t *propert
             if (flow.active) {
                 display_name += " [Active]";
             }
+
+            if (!flow.interlace_mode.empty() && flow.interlace_mode != "progressive") {
+                display_name += " [" + flow.interlace_mode + ": not supported]";
+            }
             
             if (!flow.description.empty()) {
                 display_name += " - " + flow.description;
@@ -728,9 +753,19 @@ static bool restart_flow_clicked(obs_properties_t *props, obs_property_t *proper
 
 obs_properties_t *mxl_source_get_properties(void *data)
 {
-    UNUSED_PARAMETER(data);
-    
     obs_properties_t *props = obs_properties_create();
+
+    // Why the selected flow is not shown (an interlaced video flow).
+    mxl_source_data *mxl_data = static_cast<mxl_source_data*>(data);
+    std::string status_message;
+    if (mxl_data) {
+        std::lock_guard<std::mutex> lock(mxl_data->status_mutex);
+        status_message = mxl_data->status_message;
+    }
+    if (!status_message.empty()) {
+        obs_property_t *status = obs_properties_add_text(props, "flow_status", status_message.c_str(), OBS_TEXT_INFO);
+        obs_property_text_set_info_type(status, OBS_TEXT_INFO_ERROR);
+    }
     
     // Add version information display
     char version_info[256];
@@ -834,10 +869,20 @@ void mxl_source_data::convert_v210_to_rgba(uint8_t *v210_data, size_t v210_size,
     uint32_t *v210_words = (uint32_t*)v210_data;
     uint32_t *rgba_pixels = (uint32_t*)rgba_data;
     
-    // v210 packing: 4 32-bit words contain 6 pixels
-    size_t v210_words_per_line = ((width + 5) / 6) * 4;
+    // v210 packing: 4 32-bit words contain 6 pixels. A line is padded to 48 pixels (128 bytes), as MXL lays it out.
+    size_t v210_words_per_line = ((width + 47) / 48) * 32;
+
+    // Never read past the grain: convert only the whole lines it holds.
+    uint32_t rows = height;
+    if (v210_words_per_line > 0 && v210_size / (v210_words_per_line * 4) < rows) {
+        rows = static_cast<uint32_t>(v210_size / (v210_words_per_line * 4));
+        if (!short_grain_logged.exchange(true)) {
+            blog(LOG_WARNING, "MXL Source: Grain of %zu bytes holds %u of %u lines; converting only those",
+                 v210_size, rows, height);
+        }
+    }
     
-    for (uint32_t line = 0; line < height; line++) {
+    for (uint32_t line = 0; line < rows; line++) {
         uint32_t *line_start = v210_words + (line * v210_words_per_line);
         
         for (uint32_t x = 0; x < width; x += 6) {
@@ -992,6 +1037,8 @@ mxl_flow_info mxl_source_data::get_flow_info_from_descriptor(const std::string &
                 if (!format.empty()) {
                     info.format = format;
                 }
+
+                info.interlace_mode = parser.getString("interlace_mode");
             }
         }
     } catch (const std::exception& e) {

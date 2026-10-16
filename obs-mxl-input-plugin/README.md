@@ -7,6 +7,7 @@ An OBS Studio plugin that allows you to use MXL (Media Exchange Layer) flows as 
 - **Platform Support**: Currently only supports macOS and Linux. Windows support coming soon.
 - **Media Support**: Video and audio flows. Audio is limited to one channel selection.
 - **Resolution Testing**: Only tested with 1920x1080 video resolutions.
+- **Progressive video only**: a video flow whose `flow_def.json` has an `interlace_mode` other than `progressive` (e.g. `interlaced_tff`, `interlaced_bff`) is refused. MXL keeps an interlaced flow as one field per grain (half the lines, at twice the declared rate), which this plugin cannot show. The flow list marks such flows `[<interlace_mode>: not supported]`; if one is selected, the source shows nothing, the OBS log has `MXL Source: Refusing flow ...`, and the source's properties show the reason in red.
 
 ## Overview
 
