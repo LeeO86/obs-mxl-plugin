@@ -97,7 +97,11 @@ mxl_source_data::~mxl_source_data()
 bool mxl_source_data::initialize_mxl()
 {
     cleanup_mxl();
-    status_message.clear();
+    {
+        std::lock_guard<std::mutex> lock(status_mutex);
+        status_message.clear();
+    }
+    short_grain_logged = false;
     
     // Log version information
     blog(LOG_INFO, "MXL Source Plugin v%s [ID: %s] initializing flow %s", 
@@ -185,7 +189,10 @@ bool mxl_source_data::initialize_video(std::string& flow_descriptor)
     // twice the declared rate); reading such a grain as a whole frame reads past its end.
     std::string interlace_mode = parser.getString("interlace_mode");
     if (!interlace_mode.empty() && interlace_mode != "progressive") {
-        status_message = "Flow not shown: it is " + interlace_mode + "; only progressive video flows are supported";
+        {
+            std::lock_guard<std::mutex> lock(status_mutex);
+            status_message = "Flow not shown: it is " + interlace_mode + "; only progressive video flows are supported";
+        }
         blog(LOG_ERROR, "MXL Source: Refusing flow %s: interlace_mode is %s; only progressive video flows are supported",
              flow_id.c_str(), interlace_mode.c_str());
         width = 0;
@@ -750,8 +757,13 @@ obs_properties_t *mxl_source_get_properties(void *data)
 
     // Why the selected flow is not shown (an interlaced video flow).
     mxl_source_data *mxl_data = static_cast<mxl_source_data*>(data);
-    if (mxl_data && !mxl_data->status_message.empty()) {
-        obs_property_t *status = obs_properties_add_text(props, "flow_status", mxl_data->status_message.c_str(), OBS_TEXT_INFO);
+    std::string status_message;
+    if (mxl_data) {
+        std::lock_guard<std::mutex> lock(mxl_data->status_mutex);
+        status_message = mxl_data->status_message;
+    }
+    if (!status_message.empty()) {
+        obs_property_t *status = obs_properties_add_text(props, "flow_status", status_message.c_str(), OBS_TEXT_INFO);
         obs_property_text_set_info_type(status, OBS_TEXT_INFO_ERROR);
     }
     
@@ -857,18 +869,16 @@ void mxl_source_data::convert_v210_to_rgba(uint8_t *v210_data, size_t v210_size,
     uint32_t *v210_words = (uint32_t*)v210_data;
     uint32_t *rgba_pixels = (uint32_t*)rgba_data;
     
-    // v210 packing: 4 32-bit words contain 6 pixels
-    size_t v210_words_per_line = ((width + 5) / 6) * 4;
+    // v210 packing: 4 32-bit words contain 6 pixels. A line is padded to 48 pixels (128 bytes), as MXL lays it out.
+    size_t v210_words_per_line = ((width + 47) / 48) * 32;
 
     // Never read past the grain: convert only the whole lines it holds.
     uint32_t rows = height;
     if (v210_words_per_line > 0 && v210_size / (v210_words_per_line * 4) < rows) {
         rows = static_cast<uint32_t>(v210_size / (v210_words_per_line * 4));
-        static bool short_logged = false;
-        if (!short_logged) {
+        if (!short_grain_logged.exchange(true)) {
             blog(LOG_WARNING, "MXL Source: Grain of %zu bytes holds %u of %u lines; converting only those",
                  v210_size, rows, height);
-            short_logged = true;
         }
     }
     
