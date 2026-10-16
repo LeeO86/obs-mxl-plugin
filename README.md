@@ -10,6 +10,7 @@ A collection of OBS Studio plugins that enable integration with [MXL (Media Exch
 
 - **Platform Support**: Currently only supports macOS and Linux. Windows support is under development.
 - **Resolution Requirement**: Output plugin currently only works with **1920x1080** resolution.
+- **Progressive Only**: the input plugin refuses interlaced video flows (see the [input plugin README](./obs-mxl-input-plugin/README.md)).
 
 ## Future Development and Roadmap
 - Combine input & output plugins into one
